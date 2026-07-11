@@ -34,7 +34,7 @@ DEFAULTS = {
     # runway tab
     "extra_spend": 0,
     # custom sweep tab
-    "sweep_x": "price", "sweep_y": "down_pct", "sweep_metric": "buy_adv",
+    "sweep_x": "price", "sweep_y": "down_pct",
 }
 for _k, _v in DEFAULTS.items():
     st.session_state.setdefault(_k, _v)
@@ -1047,36 +1047,6 @@ SWEEP_PARAMS = {p.key: p for p in [
 ]}
 
 
-def _m_buy_adv(cell_a, extra):
-    r = simulate(cell_a)
-    return r.net_worth_buy_liq[-1] - r.net_worth_rent_liq[-1]
-
-
-def _m_nw_buy(cell_a, extra):
-    return simulate(cell_a).net_worth_buy_liq[-1]
-
-
-def _m_nw_rent(cell_a, extra):
-    return simulate(cell_a).net_worth_rent_liq[-1]
-
-
-def _m_breakeven(cell_a, extra):
-    be = simulate(cell_a).breakeven_month
-    return be / 12 if be > 0 else math.nan
-
-
-def _m_monthly_cost(cell_a, extra):
-    ob = simulate(cell_a).outflow_buy
-    return ob[1] if len(ob) > 1 else math.nan
-
-
-def _m_buy_runway(cell_a, extra):
-    rr = runway(cell_a, extra_monthly=extra)
-    if rr.depleted_buy_month is None:
-        return 100.0
-    return min(rr.depleted_buy_month / 12, 100.0)
-
-
 def _fmt_years(v):
     return f"{v:.1f} yrs"
 
@@ -1085,33 +1055,16 @@ def _fmt_runway(v):
     return "100+ yrs" if v >= 100 else f"{v:.1f} yrs"
 
 
-@dataclass(frozen=True)
-class SweepMetric:
-    """An output metric computed per grid cell from a full simulation."""
-    key: str
-    label: str
-    direction: str      # "max" (higher is better) or "min" (lower is better)
-    fmt: object         # value -> display string
-    hoverfmt: str       # d3-format for the hover z value
-    colorscale: str
-    zmid: float | None
-    compute: object     # (Assumptions, extra_monthly) -> float; NaN = undefined
-
-
-SWEEP_METRICS = {m.key: m for m in [
-    SweepMetric("buy_adv", "Buy advantage ($)", "max", fmt, "$,.0f",
-                "RdBu", 0.0, _m_buy_adv),
-    SweepMetric("nw_buy", "Buy net worth ($)", "max", fmt, "$,.0f",
-                "Viridis", None, _m_nw_buy),
-    SweepMetric("nw_rent", "Rent net worth ($)", "max", fmt, "$,.0f",
-                "Viridis", None, _m_nw_rent),
-    SweepMetric("breakeven", "Breakeven (years)", "min", _fmt_years, ".1f",
-                "Viridis", None, _m_breakeven),
-    SweepMetric("monthly_cost", "Net monthly cost, yr 1 ($)", "min", fmt, "$,.0f",
-                "Viridis", None, _m_monthly_cost),
-    SweepMetric("buy_runway", "Total buy runway (years)", "max", _fmt_runway, ".1f",
-                "Viridis", None, _m_buy_runway),
-]}
+# Fixed set of 4 metrics shown in the Custom sweep tab, in display order.
+# Each entry: (key, label, direction, fmt_fn, hoverfmt, colorscale, zmid)
+FIXED_METRICS = [
+    ("buy_adv",     "Buy advantage ($, maximize)",         "max", fmt,        "$,.0f", "RdBu",    0.0),
+    ("breakeven",   "Breakeven (yrs, minimize)",            "min", _fmt_years, ".1f",   "Viridis", None),
+    ("monthly_cost","Net monthly cost yr 1 ($, minimize)",  "min", fmt,        "$,.0f", "Viridis", None),
+    ("buy_runway",  "Total buy runway (yrs, maximize)",     "max", _fmt_runway,".1f",   "Viridis", None),
+]
+# Index by key for convenient lookup
+FIXED_METRIC_KEYS = [m[0] for m in FIXED_METRICS]
 
 
 def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, extra):
@@ -1138,12 +1091,17 @@ def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, extra):
 
 
 @st.cache_data(show_spinner="Running custom sweep...")
-def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str, metric_key: str,
+def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
                      x_vals: tuple, y_vals: tuple, ratio: float, extra: float):
-    """Metric grid over y_vals × x_vals (rows = Y). Unaffordable cells
-    (down payment + closing + one-time > capital) stay NaN."""
-    metric = SWEEP_METRICS[metric_key]
-    z = np.full((len(y_vals), len(x_vals)), np.nan)
+    """All-metrics grid over y_vals × x_vals (rows = Y). One simulate() + one runway()
+    call per cell; unaffordable cells stay NaN across all metric grids.
+
+    Returns a dict keyed by metric key, each value a 2-D np.ndarray of shape
+    (len(y_vals), len(x_vals)).
+    """
+    shape = (len(y_vals), len(x_vals))
+    grids = {k: np.full(shape, np.nan) for k in FIXED_METRIC_KEYS}
+
     for i, yv in enumerate(y_vals):
         for j, xv in enumerate(x_vals):
             cell_a, cell_extra = _cell_assumptions(base_a, x_key, xv, y_key, yv,
@@ -1153,18 +1111,31 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str, metric_key: st
                          + cell_a.other_onetime_costs)
             if upfront_c > cell_a.capital:
                 continue
-            z[i, j] = metric.compute(cell_a, cell_extra)
-    return z
+
+            # --- single simulate() call ---
+            r = simulate(cell_a)
+            grids["buy_adv"][i, j] = r.net_worth_buy_liq[-1] - r.net_worth_rent_liq[-1]
+            be = r.breakeven_month
+            grids["breakeven"][i, j] = be / 12 if be > 0 else math.nan
+            grids["monthly_cost"][i, j] = (r.outflow_buy[1]
+                                           if len(r.outflow_buy) > 1 else math.nan)
+
+            # --- single runway() call ---
+            rr = runway(cell_a, extra_monthly=cell_extra)
+            grids["buy_runway"][i, j] = (
+                min(rr.depleted_buy_month / 12, 100.0)
+                if rr.depleted_buy_month is not None else 100.0
+            )
+
+    return grids
 
 
 with tab6:
-    st.caption("Sweep any two inputs against any metric; everything else stays at its "
-               "sidebar value. Ranges are automatic — the full natural range for "
-               "bounded inputs, 2× the current value for open-ended dollar inputs. "
-               "Rent scales with price via the price-to-rent ratio; blank cells are "
-               "unaffordable.")
+    st.caption("Ranges are automatic — full natural range for bounded inputs, 2× the "
+               "current value for open-ended dollar inputs. Rent scales with price via "
+               "the price-to-rent ratio; blank cells are unaffordable.")
 
-    sc1, sc2, sc3 = st.columns(3)
+    sc1, sc2 = st.columns(2)
     x_key = sc1.selectbox("X axis", list(SWEEP_PARAMS), key="sweep_x",
                           format_func=lambda k: SWEEP_PARAMS[k].label,
                           help="Input swept along the horizontal axis. Bounded inputs "
@@ -1175,81 +1146,69 @@ with tab6:
                           format_func=lambda k: SWEEP_PARAMS[k].label,
                           help="Input swept along the vertical axis; same automatic "
                                "ranges as the X axis.")
-    metric_key = sc3.selectbox("Metric", list(SWEEP_METRICS), key="sweep_metric",
-                               format_func=lambda k: SWEEP_METRICS[k].label,
-                               help="Output computed for every (X, Y) cell from a full "
-                                    "simulation with the two swept inputs overridden. "
-                                    "The best cell and the best-Y-per-X table follow "
-                                    "the metric's direction (maximize or minimize).")
 
     if x_key == y_key:
         st.warning("X and Y are the same input — pick two different parameters.")
     else:
         xp, yp = SWEEP_PARAMS[x_key], SWEEP_PARAMS[y_key]
-        metric = SWEEP_METRICS[metric_key]
         x_vals, y_vals = xp.values, yp.values
 
-        z = run_custom_sweep(a, x_key, y_key, metric_key, x_vals, y_vals,
-                             p2r, float(extra_spend))
+        grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals,
+                                 p2r, float(extra_spend))
 
-        left, right = st.columns([3, 2])
-        with left.container(border=True):
-            st.markdown(_mdsafe(f"**{metric.label} — {xp.label} × {yp.label}**"))
-            fig = go.Figure(go.Heatmap(
-                z=z, x=[xp.fmt(v) for v in x_vals], y=[yp.fmt(v) for v in y_vals],
-                colorscale=metric.colorscale, zmid=metric.zmid,
-                reversescale=metric.direction == "min",
-                colorbar=dict(title=dict(text=metric.label, font=dict(size=11)),
-                              thickness=12),
-                hovertemplate=(f"{xp.label}: %{{x}}<br>{yp.label}: %{{y}}<br>"
-                               f"{metric.label}: %{{z:{metric.hoverfmt}}}"
-                               f"<extra></extra>"),
-            ))
-            fig.update_layout(height=480, margin=dict(l=70, r=20, t=10, b=40),
-                              xaxis_title=xp.label, yaxis_title=yp.label)
-            st.plotly_chart(fig)
+        x_labels = [xp.fmt(v) for v in x_vals]
+        y_labels = [yp.fmt(v) for v in y_vals]
 
-        with right:
-            finite = np.isfinite(z)
-            if finite.any():
-                if metric.direction == "max":
-                    bi, bj = np.unravel_index(
-                        np.argmax(np.where(finite, z, -np.inf)), z.shape)
-                else:
-                    bi, bj = np.unravel_index(
-                        np.argmin(np.where(finite, z, np.inf)), z.shape)
-                st.success(
-                    _mdsafe(f"Best: {metric.label} = {metric.fmt(z[bi, bj])} at "
-                            f"{xp.label} = {xp.fmt(x_vals[bj])}, "
-                            f"{yp.label} = {yp.fmt(y_vals[bi])}."),
-                    icon=":material/check_circle:",
-                )
+        for m_key, m_label, m_dir, m_fmt, m_hoverfmt, m_colorscale, m_zmid in FIXED_METRICS:
+            z = grids[m_key]
+            st.markdown(f"**{_mdsafe(m_label)}**")
+            left, right = st.columns([3, 2])
 
-                verb = ("maximizing" if metric.direction == "max" else "minimizing")
+            with left.container(border=True):
+                fig = go.Figure(go.Heatmap(
+                    z=z, x=x_labels, y=y_labels,
+                    colorscale=m_colorscale, zmid=m_zmid,
+                    reversescale=(m_dir == "min"),
+                    colorbar=dict(title=dict(text=_mdsafe(m_label), font=dict(size=11)),
+                                  thickness=12),
+                    hovertemplate=(f"{_mdsafe(xp.label)}: %{{x}}<br>"
+                                   f"{_mdsafe(yp.label)}: %{{y}}<br>"
+                                   f"{_mdsafe(m_label)}: %{{z:{m_hoverfmt}}}"
+                                   f"<extra></extra>"),
+                ))
+                fig.update_layout(height=400, margin=dict(l=70, r=20, t=10, b=40),
+                                  xaxis_title=_mdsafe(xp.label),
+                                  yaxis_title=_mdsafe(yp.label))
+                st.plotly_chart(fig, use_container_width=True)
+
+            with right.container(border=True):
+                verb = "maximizing" if m_dir == "max" else "minimizing"
                 rows = []
                 for j, xv in enumerate(x_vals):
                     col = z[:, j]
                     if np.isfinite(col).any():
-                        ii = int(np.nanargmax(col) if metric.direction == "max"
+                        ii = int(np.nanargmax(col) if m_dir == "max"
                                  else np.nanargmin(col))
-                        rows.append({xp.label: xp.fmt(xv),
-                                     f"Best {yp.label}": yp.fmt(y_vals[ii]),
-                                     metric.label: metric.fmt(col[ii])})
-                with st.container(border=True):
-                    st.markdown(_mdsafe(f"**Best {yp.label} per {xp.label}**"))
+                        rows.append({
+                            xp.label: xp.fmt(xv),
+                            f"Best {yp.label}": yp.fmt(y_vals[ii]),
+                            m_label: m_fmt(col[ii]),
+                        })
+                st.markdown(_mdsafe(f"**Best {yp.label} per {xp.label}**"))
+                if rows:
                     st.dataframe(
-                        pd.DataFrame(rows), hide_index=True, height=390,
+                        pd.DataFrame(rows), hide_index=True, height=360,
                         column_config={
                             xp.label: st.column_config.TextColumn(
-                                help=f"Swept value of {xp.label} for this row"),
+                                help=f"Swept value of {_mdsafe(xp.label)} for this row"),
                             f"Best {yp.label}": st.column_config.TextColumn(
-                                help=f"{yp.label} value {verb} {metric.label} at "
-                                     f"this {xp.label}; unaffordable or undefined "
-                                     f"cells are skipped"),
-                            metric.label: st.column_config.TextColumn(
+                                help=f"{_mdsafe(yp.label)} value {verb} {_mdsafe(m_label)} "
+                                     f"at this {_mdsafe(xp.label)}; unaffordable or "
+                                     f"undefined cells are skipped"),
+                            m_label: st.column_config.TextColumn(
                                 help="Metric value at that best cell"),
                         },
                     )
-            else:
-                st.warning("Nothing to report — every cell is either unaffordable or "
-                           "has no defined value for this metric.")
+                else:
+                    st.warning("Every cell is either unaffordable or has no defined "
+                               "value for this metric.")
