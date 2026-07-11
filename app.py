@@ -185,7 +185,7 @@ base = Assumptions(
 )
 
 # ---------------------------------------------------------------- main
-st.subheader("Rent vs. Buy")
+st.title("Rent vs. Buy")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Single scenario", "Price × down payment sweep", "Details", "Methodology", "Runway"])
@@ -217,45 +217,42 @@ with tab1:
         nw_rent = res.net_worth_rent_liq[-1]
         delta = nw_buy - nw_rent
 
-        # yearly snapshots (evenly spaced) for metric sparklines
-        yearly_idx = range(0, len(res.months), 12)
-        spark_buy = [res.net_worth_buy_liq[i] for i in yearly_idx]
-        spark_rent = [res.net_worth_rent_liq[i] for i in yearly_idx]
-
         with st.container(horizontal=True):
             st.metric(f"Buy net worth (yr {horizon})", fmt(nw_buy), border=True,
-                      chart_data=spark_buy, chart_type="line",
+                      height="stretch",
                       help="After-tax portfolio + home value net of selling costs − loan "
-                           "balance. Sparkline: yearly values.")
+                           "balance")
             st.metric(f"Rent net worth (yr {horizon})", fmt(nw_rent), border=True,
-                      chart_data=spark_rent, chart_type="line",
-                      help="Portfolio net of capital-gains tax if sold. Sparkline: yearly "
-                           "values.")
+                      height="stretch",
+                      help="Portfolio net of capital-gains tax if sold")
             st.metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
-                      border=True,
+                      border=True, height="stretch",
                       help="Buy net worth minus rent net worth at the horizon, both after "
                            "taxes and selling costs. Positive = buying wins.")
             if res.breakeven_month > 0:
                 st.metric("Breakeven", f"year {res.breakeven_month / 12:.1f}", border=True,
+                          height="stretch",
                           help="First month buying (after selling costs) beats renting")
             else:
-                st.metric("Breakeven", "never (in horizon)", border=True,
+                st.metric("Breakeven", "never (in horizon)", border=True, height="stretch",
                           help="Buying never catches renting within the horizon; extend the "
                                "horizon or change assumptions to see where it would.")
 
         with st.container(horizontal=True):
-            st.metric("Cash at closing", fmt(upfront), border=True,
+            st.metric("Cash at closing", fmt(upfront), border=True, height="stretch",
                       help="Down payment + closing costs + one-time costs — leaves your "
                            "capital on day one")
             st.metric("Reserve after closing", fmt(capital - upfront), border=True,
+                      height="stretch",
                       help="Capital left invested after closing — your emergency cushion in "
                            "the buy scenario")
             st.metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True,
+                      height="stretch",
                       help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
             st.metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
                       delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
                       else "buy costs less/mo",
-                      delta_color="off", border=True,
+                      delta_color="off", border=True, height="stretch",
                       help="Owner's net monthly cost minus rent in month 1. Whichever side is "
                            "cheaper invests this difference every month.")
 
