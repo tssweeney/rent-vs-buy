@@ -3,7 +3,8 @@
 Run with: streamlit run app.py
 """
 
-from dataclasses import replace
+import math
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,8 @@ DEFAULTS = {
     "min_reserve": 300_000, "max_monthly": 0, "pmax": 1_500_000,
     # runway tab
     "extra_spend": 0,
+    # custom sweep tab
+    "sweep_x": "price", "sweep_y": "down_pct", "sweep_metric": "buy_adv",
 }
 for _k, _v in DEFAULTS.items():
     st.session_state.setdefault(_k, _v)
@@ -187,8 +190,9 @@ base = Assumptions(
 # ---------------------------------------------------------------- main
 st.title("Rent vs. Buy")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Single scenario", "Price × down payment sweep", "Details", "Methodology", "Runway"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["Single scenario", "Price × down payment sweep", "Details", "Methodology", "Runway",
+     "Custom sweep"])
 
 # ================================================================ tab 1
 with tab1:
@@ -947,3 +951,305 @@ with tab5:
             )
         else:
             st.info("No feasible down payments at the current price and capital.")
+
+# ================================================================ tab 6 — Custom sweep
+# ---- registries: sweepable inputs and output metrics -------------
+
+
+def _mdsafe(s: str) -> str:
+    """Escape every $ so Streamlit markdown never pairs them up as LaTeX math."""
+    return s.replace("$", "\\$")
+
+
+def _lin_axis(lo, hi, n=13):
+    """~n evenly spaced values over a bounded (slider-range) axis, rounded for labels."""
+    return tuple(dict.fromkeys(round(float(v), 2) for v in np.linspace(lo, hi, n)))
+
+
+def _int_axis(lo, hi, n=13):
+    """~n integer values over a bounded axis (deduplicated after rounding)."""
+    return tuple(dict.fromkeys(int(round(v)) for v in np.linspace(lo, hi, n)))
+
+
+def _dollar_axis(floor_v, sane_max, current, n=13):
+    """Open-ended dollar axis: floor .. max(sane_max, 2 × current sidebar value),
+    in nice rounded steps (the exact cap is appended so the axis always reaches it)."""
+    cap = max(sane_max, 2 * current)
+    raw = (cap - floor_v) / (n - 1)
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    vals = [float(floor_v + i * step) for i in range(n) if floor_v + i * step <= cap]
+    if vals[-1] < cap:
+        vals.append(float(cap))
+    return tuple(vals)
+
+
+def _pct(v):
+    return f"{v:g}%"
+
+
+def _num(v):
+    return f"{v:g}"
+
+
+@dataclass(frozen=True)
+class SweepParam:
+    """A sweepable input: the Assumptions field it drives and its automatic axis."""
+    key: str
+    label: str
+    field: str | None   # Assumptions field; None = special-cased in _cell_assumptions
+    to_field: object    # transform: axis (widget) units -> Assumptions units
+    values: tuple       # axis values, in widget units
+    fmt: object         # axis-tick / table formatter
+
+
+SWEEP_PARAMS = {p.key: p for p in [
+    SweepParam("price", "Purchase price ($)", "price", float,
+               _dollar_axis(200_000, 2_000_000, price), fmt),
+    SweepParam("down_pct", "Down payment (%)", "down_pct", lambda v: v / 100,
+               _lin_axis(3, 100), _pct),
+    SweepParam("mort_rate", "Mortgage rate (%)", "mortgage_rate", lambda v: v / 100,
+               _lin_axis(3, 9), _pct),
+    SweepParam("term", "Term (years)", "term_years", int, (15, 30), _num),
+    SweepParam("closing_pct", "Closing costs (% of price)", "closing_buy_pct",
+               lambda v: v / 100, _lin_axis(0, 5), _pct),
+    SweepParam("onetime", "One-time costs ($)", "other_onetime_costs", float,
+               _dollar_axis(0, 50_000, onetime), fmt),
+    SweepParam("hoa", "HOA ($/mo)", "hoa_monthly", float,
+               _dollar_axis(0, 1_000, hoa), fmt),
+    SweepParam("alt_return", "Investment return (%)", "alt_return_annual",
+               lambda v: v / 100, _lin_axis(0, 12), _pct),
+    SweepParam("home_appr", "Home appreciation (%/yr)", "home_appreciation",
+               lambda v: v / 100, _lin_axis(0, 10), _pct),
+    SweepParam("rent_growth", "Rent growth (%/yr)", "rent_growth",
+               lambda v: v / 100, _lin_axis(0, 10), _pct),
+    SweepParam("p2r", "Price-to-rent ratio", None, None, _lin_axis(10, 45), _num),
+    SweepParam("prop_tax", "Property tax (% of price)", "property_tax_rate",
+               lambda v: v / 100, _lin_axis(0.5, 2.5), _pct),
+    SweepParam("insurance", "Insurance (% of value/yr)", "insurance_rate",
+               lambda v: v / 100, _lin_axis(0, 1), _pct),
+    SweepParam("maintenance", "Maintenance (% of value/yr)", "maintenance_rate",
+               lambda v: v / 100, _lin_axis(0, 3), _pct),
+    SweepParam("selling_pct", "Selling costs (% of value)", "selling_cost_pct",
+               lambda v: v / 100, _lin_axis(0, 10), _pct),
+    SweepParam("capital", "Investable capital ($)", "capital", float,
+               _dollar_axis(100_000, 3_000_000, capital), fmt),
+    SweepParam("horizon", "Horizon (years)", "horizon_years", int,
+               _int_axis(1, 30), _num),
+    SweepParam("marginal", "Marginal tax rate (%)", "marginal_tax_rate",
+               lambda v: v / 100, _lin_axis(0, 55), _pct),
+    SweepParam("inv_tax", "Annual tax on returns (%)", "investment_tax_drag",
+               lambda v: v / 100, _lin_axis(0, 50), _pct),
+    SweepParam("cap_gains", "Capital gains at sale (%)", "cap_gains_rate",
+               lambda v: v / 100, _lin_axis(0, 45), _pct),
+    SweepParam("extra_spend", "Extra monthly spending ($)", None, None,
+               _dollar_axis(0, 20_000, extra_spend), fmt),
+]}
+
+
+def _m_buy_adv(cell_a, extra):
+    r = simulate(cell_a)
+    return r.net_worth_buy_liq[-1] - r.net_worth_rent_liq[-1]
+
+
+def _m_nw_buy(cell_a, extra):
+    return simulate(cell_a).net_worth_buy_liq[-1]
+
+
+def _m_nw_rent(cell_a, extra):
+    return simulate(cell_a).net_worth_rent_liq[-1]
+
+
+def _m_breakeven(cell_a, extra):
+    be = simulate(cell_a).breakeven_month
+    return be / 12 if be > 0 else math.nan
+
+
+def _m_monthly_cost(cell_a, extra):
+    ob = simulate(cell_a).outflow_buy
+    return ob[1] if len(ob) > 1 else math.nan
+
+
+def _m_buy_runway(cell_a, extra):
+    rr = runway(cell_a, extra_monthly=extra)
+    if rr.depleted_buy_month is None:
+        return 100.0
+    return min(rr.depleted_buy_month / 12, 100.0)
+
+
+def _fmt_years(v):
+    return f"{v:.1f} yrs"
+
+
+def _fmt_runway(v):
+    return "100+ yrs" if v >= 100 else f"{v:.1f} yrs"
+
+
+@dataclass(frozen=True)
+class SweepMetric:
+    """An output metric computed per grid cell from a full simulation."""
+    key: str
+    label: str
+    direction: str      # "max" (higher is better) or "min" (lower is better)
+    fmt: object         # value -> display string
+    hoverfmt: str       # d3-format for the hover z value
+    colorscale: str
+    zmid: float | None
+    compute: object     # (Assumptions, extra_monthly) -> float; NaN = undefined
+
+
+SWEEP_METRICS = {m.key: m for m in [
+    SweepMetric("buy_adv", "Buy advantage ($)", "max", fmt, "$,.0f",
+                "RdBu", 0.0, _m_buy_adv),
+    SweepMetric("nw_buy", "Buy net worth ($)", "max", fmt, "$,.0f",
+                "Viridis", None, _m_nw_buy),
+    SweepMetric("nw_rent", "Rent net worth ($)", "max", fmt, "$,.0f",
+                "Viridis", None, _m_nw_rent),
+    SweepMetric("breakeven", "Breakeven (years)", "min", _fmt_years, ".1f",
+                "Viridis", None, _m_breakeven),
+    SweepMetric("monthly_cost", "Net monthly cost, yr 1 ($)", "min", fmt, "$,.0f",
+                "Viridis", None, _m_monthly_cost),
+    SweepMetric("buy_runway", "Total buy runway (years)", "max", _fmt_runway, ".1f",
+                "Viridis", None, _m_buy_runway),
+]}
+
+
+def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, extra):
+    """Assumptions for one grid cell: the sidebar base with the two swept fields
+    overridden. If price or the price-to-rent ratio is swept, the cell's rent is
+    re-derived as price ÷ ratio ÷ 12 (same convention as the price × down payment
+    sweep tab); otherwise the tab-1 rent is kept."""
+    overrides = {}
+    price_v, ratio_v, derive = base_a.price, ratio, False
+    extra_m = float(extra)
+    for key, val in ((x_key, xv), (y_key, yv)):
+        p = SWEEP_PARAMS[key]
+        if key == "price":
+            price_v, derive = float(val), True
+        elif key == "p2r":
+            ratio_v, derive = float(val), True
+        elif key == "extra_spend":
+            extra_m = float(val)
+        if p.field is not None:
+            overrides[p.field] = p.to_field(val)
+    if derive:
+        overrides["monthly_rent"] = rent_from_price(price_v, ratio_v)
+    return replace(base_a, **overrides), extra_m
+
+
+@st.cache_data(show_spinner="Running custom sweep...")
+def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str, metric_key: str,
+                     x_vals: tuple, y_vals: tuple, ratio: float, extra: float):
+    """Metric grid over y_vals × x_vals (rows = Y). Unaffordable cells
+    (down payment + closing + one-time > capital) stay NaN."""
+    metric = SWEEP_METRICS[metric_key]
+    z = np.full((len(y_vals), len(x_vals)), np.nan)
+    for i, yv in enumerate(y_vals):
+        for j, xv in enumerate(x_vals):
+            cell_a, cell_extra = _cell_assumptions(base_a, x_key, xv, y_key, yv,
+                                                   ratio, extra)
+            upfront_c = (cell_a.price * cell_a.down_pct
+                         + cell_a.price * cell_a.closing_buy_pct
+                         + cell_a.other_onetime_costs)
+            if upfront_c > cell_a.capital:
+                continue
+            z[i, j] = metric.compute(cell_a, cell_extra)
+    return z
+
+
+with tab6:
+    st.caption("Sweep any two inputs against any metric; everything else stays at its "
+               "sidebar value. Ranges are automatic — the full natural range for "
+               "bounded inputs, 2× the current value for open-ended dollar inputs. "
+               "Rent scales with price via the price-to-rent ratio; blank cells are "
+               "unaffordable.")
+
+    sc1, sc2, sc3 = st.columns(3)
+    x_key = sc1.selectbox("X axis", list(SWEEP_PARAMS), key="sweep_x",
+                          format_func=lambda k: SWEEP_PARAMS[k].label,
+                          help="Input swept along the horizontal axis. Bounded inputs "
+                               "sweep their full slider range; open-ended dollar "
+                               "inputs sweep from a sane floor up to 2× the current "
+                               "sidebar value.")
+    y_key = sc2.selectbox("Y axis", list(SWEEP_PARAMS), key="sweep_y",
+                          format_func=lambda k: SWEEP_PARAMS[k].label,
+                          help="Input swept along the vertical axis; same automatic "
+                               "ranges as the X axis.")
+    metric_key = sc3.selectbox("Metric", list(SWEEP_METRICS), key="sweep_metric",
+                               format_func=lambda k: SWEEP_METRICS[k].label,
+                               help="Output computed for every (X, Y) cell from a full "
+                                    "simulation with the two swept inputs overridden. "
+                                    "The best cell and the best-Y-per-X table follow "
+                                    "the metric's direction (maximize or minimize).")
+
+    if x_key == y_key:
+        st.warning("X and Y are the same input — pick two different parameters.")
+    else:
+        xp, yp = SWEEP_PARAMS[x_key], SWEEP_PARAMS[y_key]
+        metric = SWEEP_METRICS[metric_key]
+        x_vals, y_vals = xp.values, yp.values
+
+        z = run_custom_sweep(a, x_key, y_key, metric_key, x_vals, y_vals,
+                             p2r, float(extra_spend))
+
+        left, right = st.columns([3, 2])
+        with left.container(border=True):
+            st.markdown(_mdsafe(f"**{metric.label} — {xp.label} × {yp.label}**"))
+            fig = go.Figure(go.Heatmap(
+                z=z, x=[xp.fmt(v) for v in x_vals], y=[yp.fmt(v) for v in y_vals],
+                colorscale=metric.colorscale, zmid=metric.zmid,
+                reversescale=metric.direction == "min",
+                colorbar=dict(title=dict(text=metric.label, font=dict(size=11)),
+                              thickness=12),
+                hovertemplate=(f"{xp.label}: %{{x}}<br>{yp.label}: %{{y}}<br>"
+                               f"{metric.label}: %{{z:{metric.hoverfmt}}}"
+                               f"<extra></extra>"),
+            ))
+            fig.update_layout(height=480, margin=dict(l=70, r=20, t=10, b=40),
+                              xaxis_title=xp.label, yaxis_title=yp.label)
+            st.plotly_chart(fig)
+
+        with right:
+            finite = np.isfinite(z)
+            if finite.any():
+                if metric.direction == "max":
+                    bi, bj = np.unravel_index(
+                        np.argmax(np.where(finite, z, -np.inf)), z.shape)
+                else:
+                    bi, bj = np.unravel_index(
+                        np.argmin(np.where(finite, z, np.inf)), z.shape)
+                st.success(
+                    _mdsafe(f"Best: {metric.label} = {metric.fmt(z[bi, bj])} at "
+                            f"{xp.label} = {xp.fmt(x_vals[bj])}, "
+                            f"{yp.label} = {yp.fmt(y_vals[bi])}."),
+                    icon=":material/check_circle:",
+                )
+
+                verb = ("maximizing" if metric.direction == "max" else "minimizing")
+                rows = []
+                for j, xv in enumerate(x_vals):
+                    col = z[:, j]
+                    if np.isfinite(col).any():
+                        ii = int(np.nanargmax(col) if metric.direction == "max"
+                                 else np.nanargmin(col))
+                        rows.append({xp.label: xp.fmt(xv),
+                                     f"Best {yp.label}": yp.fmt(y_vals[ii]),
+                                     metric.label: metric.fmt(col[ii])})
+                with st.container(border=True):
+                    st.markdown(_mdsafe(f"**Best {yp.label} per {xp.label}**"))
+                    st.dataframe(
+                        pd.DataFrame(rows), hide_index=True, height=390,
+                        column_config={
+                            xp.label: st.column_config.TextColumn(
+                                help=f"Swept value of {xp.label} for this row"),
+                            f"Best {yp.label}": st.column_config.TextColumn(
+                                help=f"{yp.label} value {verb} {metric.label} at "
+                                     f"this {xp.label}; unaffordable or undefined "
+                                     f"cells are skipped"),
+                            metric.label: st.column_config.TextColumn(
+                                help="Metric value at that best cell"),
+                        },
+                    )
+            else:
+                st.warning("Nothing to report — every cell is either unaffordable or "
+                           "has no defined value for this metric.")
