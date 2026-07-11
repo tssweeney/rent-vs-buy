@@ -217,44 +217,41 @@ with tab1:
         nw_rent = res.net_worth_rent_liq[-1]
         delta = nw_buy - nw_rent
 
-        with st.container(horizontal=True):
-            st.metric(f"Buy net worth (yr {horizon})", fmt(nw_buy), border=True,
-                      height="stretch",
-                      help="After-tax portfolio + home value net of selling costs − loan "
-                           "balance")
-            st.metric(f"Rent net worth (yr {horizon})", fmt(nw_rent), border=True,
-                      height="stretch",
-                      help="Portfolio net of capital-gains tax if sold")
-            st.metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
-                      border=True, height="stretch",
-                      help="Buy net worth minus rent net worth at the horizon, both after "
-                           "taxes and selling costs. Positive = buying wins.")
-            if res.breakeven_month > 0:
-                st.metric("Breakeven", f"year {res.breakeven_month / 12:.1f}", border=True,
-                          height="stretch",
-                          help="First month buying (after selling costs) beats renting")
-            else:
-                st.metric("Breakeven", "never (in horizon)", border=True, height="stretch",
-                          help="Buying never catches renting within the horizon; extend the "
-                               "horizon or change assumptions to see where it would.")
+        MH = 150  # uniform metric-card height across both rows
+        r1 = st.columns(4)
+        r1[0].metric(f"Buy net worth (yr {horizon})", fmt(nw_buy), border=True, height=MH,
+                     help="After-tax portfolio + home value net of selling costs − loan "
+                          "balance")
+        r1[1].metric(f"Rent net worth (yr {horizon})", fmt(nw_rent), border=True, height=MH,
+                     help="Portfolio net of capital-gains tax if sold")
+        r1[2].metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
+                     border=True, height=MH,
+                     help="Buy net worth minus rent net worth at the horizon, both after "
+                          "taxes and selling costs. Positive = buying wins.")
+        if res.breakeven_month > 0:
+            r1[3].metric("Breakeven", f"year {res.breakeven_month / 12:.1f}", border=True,
+                         height=MH,
+                         help="First month buying (after selling costs) beats renting")
+        else:
+            r1[3].metric("Breakeven", "never (in horizon)", border=True, height=MH,
+                         help="Buying never catches renting within the horizon; extend the "
+                              "horizon or change assumptions to see where it would.")
 
-        with st.container(horizontal=True):
-            st.metric("Cash at closing", fmt(upfront), border=True, height="stretch",
-                      help="Down payment + closing costs + one-time costs — leaves your "
-                           "capital on day one")
-            st.metric("Reserve after closing", fmt(capital - upfront), border=True,
-                      height="stretch",
-                      help="Capital left invested after closing — your emergency cushion in "
-                           "the buy scenario")
-            st.metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True,
-                      height="stretch",
-                      help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
-            st.metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
-                      delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
-                      else "buy costs less/mo",
-                      delta_color="off", border=True, height="stretch",
-                      help="Owner's net monthly cost minus rent in month 1. Whichever side is "
-                           "cheaper invests this difference every month.")
+        r2 = st.columns(4)
+        r2[0].metric("Cash at closing", fmt(upfront), border=True, height=MH,
+                     help="Down payment + closing costs + one-time costs — leaves your "
+                          "capital on day one")
+        r2[1].metric("Reserve after closing", fmt(capital - upfront), border=True, height=MH,
+                     help="Capital left invested after closing — your emergency cushion in "
+                          "the buy scenario")
+        r2[2].metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True, height=MH,
+                     help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
+        r2[3].metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
+                     delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
+                     else "buy costs less/mo",
+                     delta_color="off", border=True, height=MH,
+                     help="Owner's net monthly cost minus rent in month 1. Whichever side is "
+                          "cheaper invests this difference every month.")
 
         yrs = np.array(res.months) / 12
 
@@ -773,31 +770,32 @@ with tab5:
     burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
     burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
 
-    with st.container(horizontal=True):
-        st.metric("Forced sale", sale_yr_label, border=True,
-                  help="Year the owner's liquid portfolio runs dry and the house is "
-                       "force-sold. 'never' means the portfolio sustains ownership "
-                       "costs indefinitely (no sale ever needed).")
-        st.metric("Sale proceeds", sale_proc_label, border=True,
-                  help="Net cash from the forced sale: home value × (1 − selling "
-                       "costs) − remaining loan balance. Injected into the liquid "
-                       "portfolio to fund renting. Home-sale capital gains are not "
-                       "modeled (§121 simplification).")
-        st.metric("Total buy runway", buy_label, border=True,
-                  help="How long the buy scenario's combined portfolio lasts — first "
-                       "as an owner, then (after the forced sale) as a renter at "
-                       "then-current market rent. '100+ yrs' = sustainable over the "
-                       "full simulation horizon.")
-        st.metric("Rent runway", rent_label, border=True,
-                  help="How long the renter's portfolio (all investable capital) "
-                       "lasts paying rent plus extra spending. '100+ yrs' = "
-                       "sustainable withdrawal rate over 100 years.")
-        st.metric("Buy burn (mo 1)", fmtm(burn_buy_m1), border=True,
-                  help="Owner's total month-1 outflow: P&I + property tax + "
-                       "insurance + maintenance + HOA + PMI + extra spending. "
-                       "No interest-deduction benefit (no income).")
-        st.metric("Rent burn (mo 1)", fmtm(burn_rent_m1), border=True,
-                  help="Renter's month-1 outflow: rent + extra spending.")
+    RMH = 130  # uniform runway metric-card height
+    rw = st.columns(6)
+    rw[0].metric("Forced sale", sale_yr_label, border=True, height=RMH,
+                 help="Year the owner's liquid portfolio runs dry and the house is "
+                      "force-sold. 'never' means the portfolio sustains ownership "
+                      "costs indefinitely (no sale ever needed).")
+    rw[1].metric("Sale proceeds", sale_proc_label, border=True, height=RMH,
+                 help="Net cash from the forced sale: home value × (1 − selling "
+                      "costs) − remaining loan balance. Injected into the liquid "
+                      "portfolio to fund renting. Home-sale capital gains are not "
+                      "modeled (§121 simplification).")
+    rw[2].metric("Total buy runway", buy_label, border=True, height=RMH,
+                 help="How long the buy scenario's combined portfolio lasts — first "
+                      "as an owner, then (after the forced sale) as a renter at "
+                      "then-current market rent. '100+ yrs' = sustainable over the "
+                      "full simulation horizon.")
+    rw[3].metric("Rent runway", rent_label, border=True, height=RMH,
+                 help="How long the renter's portfolio (all investable capital) "
+                      "lasts paying rent plus extra spending. '100+ yrs' = "
+                      "sustainable withdrawal rate over 100 years.")
+    rw[4].metric("Buy burn (mo 1)", fmt(burn_buy_m1), border=True, height=RMH,
+                 help="Owner's total month-1 outflow: P&I + property tax + "
+                      "insurance + maintenance + HOA + PMI + extra spending. "
+                      "No interest-deduction benefit (no income).")
+    rw[5].metric("Rent burn (mo 1)", fmt(burn_rent_m1), border=True, height=RMH,
+                 help="Renter's month-1 outflow: rent + extra spending.")
 
     # ---- Chart 1: liquid portfolio over time ----
     # Show a few years past the later depletion, or 40 years if neither depletes
