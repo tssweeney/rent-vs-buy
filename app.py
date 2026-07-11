@@ -188,8 +188,8 @@ base = Assumptions(
 # ---------------------------------------------------------------- main
 st.title("Rent vs. Buy")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Single scenario", "Scenario Explorer", "Details", "Methodology", "Runway"])
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Overview", "Single scenario", "Scenario Explorer", "Details", "Methodology", "Runway"])
 
 # ================================================================ tab 1
 with tab1:
@@ -230,11 +230,11 @@ with tab1:
                      help="Buy net worth minus rent net worth at the horizon, both after "
                           "taxes and selling costs. Positive = buying wins.")
         if res.breakeven_month > 0:
-            r1[3].metric("Breakeven", f"year {res.breakeven_month / 12:.1f}", border=True,
-                         height=MH,
+            r1[3].metric("Net worth breakeven", f"year {res.breakeven_month / 12:.1f}",
+                         border=True, height=MH,
                          help="First month buying (after selling costs) beats renting")
         else:
-            r1[3].metric("Breakeven", "never (in horizon)", border=True, height=MH,
+            r1[3].metric("Net worth breakeven", "never (in horizon)", border=True, height=MH,
                          help="Buying never catches renting within the horizon; extend the "
                               "horizon or change assumptions to see where it would.")
 
@@ -343,6 +343,104 @@ with tab1:
                                     xaxis_title="Investment return (pre-tax, %)",
                                     yaxis_title=f"Buy − rent, yr {horizon} ($)"))
             st.caption("Zero crossing = investment return at which renting starts to win.")
+
+# ================================================================ Hoist runway computation
+# Computed once here (after `a` and `res` are ready) so both the Overview tab and
+# the Runway tab can share the same result.  The extra_spend widget lives on the Runway
+# tab but its value is always available via st.session_state["extra_spend"].
+_extra_spend_hoist = float(st.session_state.get("extra_spend", DEFAULTS["extra_spend"]))
+rwy = runway(a, extra_monthly=_extra_spend_hoist)
+
+# ================================================================ tab 0 (Overview)
+with tab0:
+    if not res.feasible:
+        st.error(f"Infeasible: upfront cash needed ({fmtm(price * down_pct + price * closing_pct + onetime)}) "
+                 f"exceeds capital ({fmtm(capital)}).")
+    else:
+        # --- Metric 1: Buy advantage ---
+        _nw_buy = res.net_worth_buy_liq[-1]
+        _nw_rent = res.net_worth_rent_liq[-1]
+        _delta = _nw_buy - _nw_rent
+
+        # --- Metric 2: Net worth breakeven ---
+        if res.breakeven_month > 0:
+            _be_label = f"year {res.breakeven_month / 12:.1f}"
+        else:
+            _be_label = "never (in horizon)"
+
+        # --- Metric 3: Monthly cost vs rent (mo 1) ---
+        _cost_diff = res.outflow_buy[1] - res.outflow_rent[1]
+
+        # --- Metric 4: Monthly cost breakeven ---
+        _cash_be_month = None
+        for _m in range(1, len(res.outflow_buy)):
+            if res.outflow_buy[_m] <= res.outflow_rent[_m]:
+                _cash_be_month = _m
+                break
+        if _cash_be_month is None:
+            _cash_be_label = "never (in horizon)"
+        elif _cash_be_month == 1:
+            _cash_be_label = "immediately"
+        else:
+            _cash_be_label = f"year {_cash_be_month / 12:.1f}"
+
+        # --- Metric 5: Forced sale ---
+        _sale_label = f"yr {rwy.sale_month / 12:.1f}" if rwy.sale_month is not None else "never"
+
+        # --- Metric 6: Buy runway advantage ---
+        _CAP = 1200  # 100-year cap in months
+        _buy_runway_m = rwy.depleted_buy_month if rwy.depleted_buy_month is not None else _CAP
+        _rent_runway_m = rwy.depleted_rent_month if rwy.depleted_rent_month is not None else _CAP
+        _runway_adv_yrs = (_buy_runway_m - _rent_runway_m) / 12
+        _both_sustainable = (rwy.depleted_buy_month is None and rwy.depleted_rent_month is None)
+        if _both_sustainable:
+            _runway_adv_label = "—"
+            _runway_adv_delta = "both sustainable"
+            _runway_adv_delta_color = "off"
+        else:
+            _runway_adv_label = f"{_runway_adv_yrs:+.1f} yrs"
+            _runway_adv_delta = "buy lasts longer" if _runway_adv_yrs > 0 else "rent lasts longer"
+            _runway_adv_delta_color = "normal" if _runway_adv_yrs > 0 else "inverse"
+
+        OMH = 150  # overview metric-card height
+        # Two rows of 3 (3+3 rather than 6 across)
+        ov1 = st.columns(3)
+        ov1[0].metric("Buy advantage", fmt(_delta),
+                      delta=f"{_delta / _nw_rent * 100:+.1f}% vs rent",
+                      border=True, height=OMH,
+                      help="Liquid net worth difference at the horizon (buy minus rent), "
+                           "after taxes and selling costs. Positive = buying wins.")
+        ov1[1].metric("Net worth breakeven", _be_label, border=True, height=OMH,
+                      help="First month buying net worth (after selling costs) "
+                           "exceeds renting net worth — and stays ahead.")
+        ov1[2].metric("Monthly cost vs rent (mo 1)", fmt(_cost_diff),
+                      delta="buy costs more/mo" if _cost_diff > 0 else "buy costs less/mo",
+                      delta_color="off", border=True, height=OMH,
+                      help="Owner's net monthly cost minus rent in month 1. "
+                           "The cheaper side invests the difference every month.")
+
+        ov2 = st.columns(3)
+        ov2[0].metric("Monthly cost breakeven", _cash_be_label, border=True, height=OMH,
+                      help="First month the owner's net monthly cost is at or below rent — "
+                           "i.e., when owning becomes cheaper month-to-month. "
+                           "This is cash-flow breakeven, distinct from net-worth breakeven: "
+                           "even before this point the buy scenario may be building wealth "
+                           "through equity, but owning still costs more out-of-pocket.")
+        ov2[1].metric("Forced sale", _sale_label, border=True, height=OMH,
+                      help="Year the owner's liquid portfolio runs dry and the house must "
+                           "be sold. 'never' means the portfolio sustains ownership costs "
+                           "indefinitely (under the Runway tab's assumptions: no income, "
+                           "extra monthly spend drawn from portfolio).")
+        ov2[2].metric("Buy runway advantage", _runway_adv_label,
+                      delta=_runway_adv_delta, delta_color=_runway_adv_delta_color,
+                      border=True, height=OMH,
+                      help="Total buy runway minus rent runway, in years. "
+                           "A positive value means buying survives longer in retirement. "
+                           "Neither-depleted scenarios are treated as the 100-year cap "
+                           "(1,200 months) for this arithmetic — if both are sustainable "
+                           "the card shows '—'.")
+
+        st.caption("For full charts and month-by-month detail see the other tabs.")
 
 # ================================================================ tab 3 (Details)
 with tab3:
@@ -632,10 +730,8 @@ with tab5:
              "Range 0–50,000; default 0 isolates the pure housing-cost question.",
     )
 
-    # Reuse `a` from tab 1 (already built above with the replaced Assumptions).
-    # Guard: if tab 1 scenario is infeasible, a.feasible may not exist on `a`,
-    # but runway() handles max(capital - upfront, 0) internally.
-    rwy = runway(a, extra_monthly=float(extra_spend))
+    # `rwy` was hoisted above (after the Single-scenario block) and uses
+    # st.session_state["extra_spend"], so it's always in sync with this widget.
 
     def _runway_label(depleted_month, max_years=100):
         if depleted_month is None:
