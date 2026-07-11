@@ -30,7 +30,6 @@ DEFAULTS = {
     # single-scenario tab
     "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 4_167,
     # runway tab
-    "extra_spend": 0,
     # scenario explorer tab
     "sweep_x": "price", "sweep_y": "down_pct",
 }
@@ -75,6 +74,17 @@ down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct",
                                   "is the mortgage. Below 20% adds PMI until you reach "
                                   "22% equity.") / 100
 st.sidebar.caption(f"Down payment: {fmtm(price * down_pct)}")
+derive_rent = st.sidebar.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
+                                  help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
+                                       "so it tracks the purchase price. Off: type a rent "
+                                       "you've actually seen on the market.")
+if derive_rent:
+    rent0 = rent_from_price(price, st.session_state["p2r"])
+else:
+    rent0 = st.sidebar.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0",
+                                    help="Starting monthly rent for the comparable home; grows "
+                                         "at the rent-growth rate each year.")
+st.sidebar.caption(f"Comparable rent: {fmtm(rent0)}/mo")
 
 # ---- Section 1: The deal ----------------------------------------
 st.sidebar.subheader("The deal")
@@ -186,26 +196,13 @@ base = Assumptions(
 )
 
 # ---------------------------------------------------------------- main
-st.title("Rent vs. Buy")
+st.subheader("Rent vs. Buy")
 
 tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Overview", "Single scenario", "Scenario Explorer", "Details", "Methodology", "Runway"])
 
 # ================================================================ tab 1
 with tab1:
-    c1, c2 = st.columns(2, vertical_alignment="center")
-    derive_rent = c1.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
-                              help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
-                                   "so it tracks the purchase price. Off: type a rent "
-                                   "you've actually seen on the market.")
-    if derive_rent:
-        rent0 = rent_from_price(price, p2r)
-        c1.caption(f"Comparable rent: {fmtm(rent0)}/mo")
-    else:
-        rent0 = c2.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0",
-                                help="Starting monthly rent for the comparable home; grows "
-                                     "at the rent-growth rate each year.")
-
     a = replace(base, price=price, down_pct=down_pct, monthly_rent=rent0)
     res = simulate(a)
 
@@ -346,10 +343,8 @@ with tab1:
 
 # ================================================================ Hoist runway computation
 # Computed once here (after `a` and `res` are ready) so both the Overview tab and
-# the Runway tab can share the same result.  The extra_spend widget lives on the Runway
-# tab but its value is always available via st.session_state["extra_spend"].
-_extra_spend_hoist = float(st.session_state.get("extra_spend", DEFAULTS["extra_spend"]))
-rwy = runway(a, extra_monthly=_extra_spend_hoist)
+# the Runway tab can share the same result.
+rwy = runway(a)
 
 # ================================================================ tab 0 (Overview)
 with tab0:
@@ -439,8 +434,7 @@ with tab0:
             st.metric("Forced sale", _sale_label, border=True, height=OMH,
                       help="Year the owner's liquid portfolio runs dry and the house must "
                            "be sold. 'never' means the portfolio sustains ownership costs "
-                           "indefinitely (under the Runway tab's assumptions: no income, "
-                           "extra monthly spend drawn from portfolio).")
+                           "indefinitely (no income, housing costs drawn from portfolio).")
             st.metric("Buy runway advantage", _runway_adv_label,
                       delta=_runway_adv_delta, delta_color=_runway_adv_delta_color,
                       border=True, height=OMH,
@@ -722,7 +716,7 @@ with tab4:
 with tab5:
     st.caption(
         "Assumes you retire today with no income and pay all housing costs "
-        "(plus any extra spending) out of your liquid investment portfolio. "
+        "out of your liquid investment portfolio. "
         "Two modeling choices: (1) no mortgage-interest deduction — no income "
         "to deduct against; (2) each withdrawal is grossed up for the embedded "
         "capital-gains tax on portfolio gains, so you sell more shares than you "
@@ -731,17 +725,6 @@ with tab5:
         "loan repaid, gains untaxed per §121 simplification) and the proceeds fund "
         "renting the comparable home at then-current market rent."
     )
-
-    extra_spend = st.number_input(
-        "Other monthly spending ($)", min_value=0, max_value=50_000,
-        step=500, key="extra_spend",
-        help="Non-housing living costs (food, travel, healthcare, etc.) drawn "
-             "from the same portfolio every month, on top of housing outflows. "
-             "Range 0–50,000; default 0 isolates the pure housing-cost question.",
-    )
-
-    # `rwy` was hoisted above (after the Single-scenario block) and uses
-    # st.session_state["extra_spend"], so it's always in sync with this widget.
 
     def _runway_label(depleted_month, max_years=100):
         if depleted_month is None:
@@ -777,14 +760,14 @@ with tab5:
                       "full simulation horizon.")
     rw[3].metric("Rent runway", rent_label, border=True, height=RMH,
                  help="How long the renter's portfolio (all investable capital) "
-                      "lasts paying rent plus extra spending. '100+ yrs' = "
+                      "lasts paying rent. '100+ yrs' = "
                       "sustainable withdrawal rate over 100 years.")
     rw[4].metric("Buy burn (mo 1)", fmt(burn_buy_m1), border=True, height=RMH,
                  help="Owner's total month-1 outflow: P&I + property tax + "
-                      "insurance + maintenance + HOA + PMI + extra spending. "
+                      "insurance + maintenance + HOA + PMI. "
                       "No interest-deduction benefit (no income).")
     rw[5].metric("Rent burn (mo 1)", fmt(burn_rent_m1), border=True, height=RMH,
-                 help="Renter's month-1 outflow: rent + extra spending.")
+                 help="Renter's month-1 outflow: the rent payment.")
 
     # ---- Chart 1: liquid portfolio over time ----
     # Show a few years past the later depletion, or 40 years if neither depletes
@@ -861,7 +844,7 @@ with tab5:
             if rwy.sale_month is not None else ""
         )
         st.caption(
-            "Each portfolio is drawn down by its own housing costs (+ extra spending) "
+            "Each portfolio is drawn down by its own housing costs "
             "with no income. Growth continues until the portfolio hits zero. "
             "Buy starts with less cash (down payment + closing already spent) "
             "but may have lower ongoing costs depending on loan size." + sale_note
@@ -872,8 +855,7 @@ with tab5:
         st.markdown("**Runway vs. down payment at current price**")
 
         @st.cache_data(show_spinner="Computing runway sweep...")
-        def _runway_sweep(base_a: Assumptions, price_v: float,
-                          rent_v: float, extra: float):
+        def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
             downs_sweep = [d / 100 for d in range(0, 101, 5)]
             results = []
             for d in downs_sweep:
@@ -883,14 +865,14 @@ with tab5:
                     continue
                 a_d = replace(base_a, price=price_v, down_pct=d,
                               monthly_rent=rent_v)
-                rr = runway(a_d, extra_monthly=extra)
+                rr = runway(a_d)
                 # Use TOTAL buy runway (final depletion, including post-sale rent phase)
                 buy_yrs = (rr.depleted_buy_month / 12
                            if rr.depleted_buy_month is not None else 100.0)
                 results.append((d * 100, min(buy_yrs, 100.0)))
             return results
 
-        sweep_data = _runway_sweep(base, price, rent0, float(extra_spend))
+        sweep_data = _runway_sweep(base, price, rent0)
         valid = [(d, y) for d, y in sweep_data if y is not None]
 
         if valid:
@@ -1028,7 +1010,7 @@ SWEEP_PARAMS = {p.key: p for p in [
     SweepParam("cap_gains", "Capital gains at sale (%)", "cap_gains_rate",
                lambda v: v / 100, _lin_axis(0, 45), _pct),
     SweepParam("extra_spend", "Extra monthly spending ($)", None, None,
-               _dollar_axis(0, 20_000, extra_spend), fmt),
+               _dollar_axis(0, 20_000, 0), fmt),
 ]}
 
 
@@ -1139,7 +1121,7 @@ with tab2:
         x_vals, y_vals = xp.values, yp.values
 
         grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals,
-                                 p2r, float(extra_spend))
+                                 p2r, 0.0)
 
         x_labels = [xp.fmt(v) for v in x_vals]
         y_labels = [yp.fmt(v) for v in y_vals]
