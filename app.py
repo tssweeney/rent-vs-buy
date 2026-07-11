@@ -359,37 +359,38 @@ with tab3:
     gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly",
                                 label_visibility="collapsed")
 
+    # row 0 = closing day: flows are zero, balances are the starting position
     df_m = pd.DataFrame({
-        "Month": res.months[1:],
+        "Month": res.months,
         # --- what the owner pays each month
-        "P&I payment": res.payment_m[1:],
-        "  of which interest": res.interest_m[1:],
-        "  of which principal": res.principal_m[1:],
-        "Property tax": res.prop_tax_m[1:],
-        "Insurance": res.insurance_m[1:],
-        "Maintenance": res.maintenance_m[1:],
-        "HOA": res.hoa_m[1:],
-        "PMI": res.pmi_m[1:],
-        "Interest tax benefit (−)": res.tax_benefit_m[1:],
-        "Own cost (net)": res.outflow_buy[1:],
+        "P&I payment": res.payment_m,
+        "  of which interest": res.interest_m,
+        "  of which principal": res.principal_m,
+        "Property tax": res.prop_tax_m,
+        "Insurance": res.insurance_m,
+        "Maintenance": res.maintenance_m,
+        "HOA": res.hoa_m,
+        "PMI": res.pmi_m,
+        "Interest tax benefit (−)": res.tax_benefit_m,
+        "Own cost (net)": res.outflow_buy,
         # --- the rent alternative
-        "Rent": res.outflow_rent[1:],
-        "Own − rent": [b - r for b, r in zip(res.outflow_buy[1:], res.outflow_rent[1:])],
-        "Invested → buy portfolio": res.contrib_buy_m[1:],
-        "Invested → rent portfolio": res.contrib_rent_m[1:],
+        "Rent": res.outflow_rent,
+        "Own − rent": [b - r for b, r in zip(res.outflow_buy, res.outflow_rent)],
+        "Invested → buy portfolio": res.contrib_buy_m,
+        "Invested → rent portfolio": res.contrib_rent_m,
         # --- balances (end of period)
-        "Home value": res.home_value[1:],
-        "Loan balance": res.loan_balance[1:],
+        "Home value": res.home_value,
+        "Loan balance": res.loan_balance,
         "Home equity (if sold)": [h * (1 - selling_pct) - b for h, b in
-                                  zip(res.home_value[1:], res.loan_balance[1:])],
-        "Portfolio (buy)": res.portfolio_buy[1:],
-        "Portfolio (buy, after tax if sold)": res.portfolio_buy_after_tax[1:],
-        "Portfolio (rent)": res.portfolio_rent[1:],
-        "Portfolio (rent, after tax if sold)": res.portfolio_rent_after_tax[1:],
-        "Net worth — buy (if sold)": res.net_worth_buy_liq[1:],
-        "Net worth — rent (if sold)": res.net_worth_rent_liq[1:],
+                                  zip(res.home_value, res.loan_balance)],
+        "Portfolio (buy)": res.portfolio_buy,
+        "Portfolio (buy, after tax if sold)": res.portfolio_buy_after_tax,
+        "Portfolio (rent)": res.portfolio_rent,
+        "Portfolio (rent, after tax if sold)": res.portfolio_rent_after_tax,
+        "Net worth — buy (if sold)": res.net_worth_buy_liq,
+        "Net worth — rent (if sold)": res.net_worth_rent_liq,
         "Buy advantage": [b - r for b, r in
-                          zip(res.net_worth_buy_liq[1:], res.net_worth_rent_liq[1:])],
+                          zip(res.net_worth_buy_liq, res.net_worth_rent_liq)],
     })
 
     FLOWS = ["P&I payment", "  of which interest", "  of which principal", "Property tax",
@@ -402,12 +403,12 @@ with tab3:
               "Net worth — buy (if sold)", "Net worth — rent (if sold)", "Buy advantage"]
 
     if gran == "Yearly":
-        df_m["Year"] = (df_m["Month"] - 1) // 12 + 1
+        df_m["Year"] = (df_m["Month"] - 1) // 12 + 1  # month 0 -> year 0 (closing)
         agg = {c: "sum" for c in FLOWS} | {c: "last" for c in STOCKS}
         df = df_m.groupby("Year", as_index=False).agg(agg)
         period_col = "Year"
-        st.caption("Flows (payments, costs, contributions) are **summed per year**; "
-                   "balances are **end of year**.")
+        st.caption("Row 0 is **closing day** (starting balances, no flows). Flows are "
+                   "**summed per year**; balances are **end of year**.")
     else:
         df = df_m
         period_col = "Month"
@@ -423,6 +424,10 @@ with tab3:
 
     with st.expander("How to read this table"):
         st.markdown("""
+- **Row 0 is closing day** — reconcile it against your settings: Portfolio (buy) =
+  capital − down payment − closing costs − one-time costs; Portfolio (rent) = capital;
+  Home value = purchase price; Loan balance = price − down payment; Home equity already
+  reflects the selling-cost haircut.
 - **Own cost (net)** = P&I + property tax + insurance + maintenance + HOA + PMI − interest
   tax benefit. This is the owner's true monthly outflow.
 - **Own − rent** is the cash-flow gap between the two lifestyles. Whichever side is cheaper
