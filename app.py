@@ -228,6 +228,24 @@ with tab1:
                           yaxis_title="Net worth ($)", hovermode="x unified", height=450)
         st.plotly_chart(fig)
 
+        # composition of buy-side net worth: investments vs property equity
+        equity_liq = [h * (1 - selling_pct) - b
+                      for h, b in zip(res.home_value, res.loan_balance)]
+        figc = go.Figure()
+        figc.add_trace(go.Scatter(x=yrs, y=res.portfolio_buy_after_tax,
+                                  name="Investments (after tax)",
+                                  stackgroup="buy", line=dict(width=0.5)))
+        figc.add_trace(go.Scatter(x=yrs, y=equity_liq,
+                                  name="Home equity (after selling costs)",
+                                  stackgroup="buy", line=dict(width=0.5)))
+        figc.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq,
+                                  name="Rent & invest (after tax)",
+                                  line=dict(dash="dash", color="gray")))
+        figc.update_layout(title="What makes up the buy net worth",
+                           xaxis_title="Years", yaxis_title="$",
+                           hovermode="x unified", height=400)
+        st.plotly_chart(figc)
+
         colA, colB = st.columns(2)
         with colA:
             fig2 = go.Figure()
@@ -362,6 +380,8 @@ with tab3:
         # --- balances (end of period)
         "Home value": res.home_value[1:],
         "Loan balance": res.loan_balance[1:],
+        "Home equity (if sold)": [h * (1 - selling_pct) - b for h, b in
+                                  zip(res.home_value[1:], res.loan_balance[1:])],
         "Portfolio (buy)": res.portfolio_buy[1:],
         "Portfolio (buy, after tax if sold)": res.portfolio_buy_after_tax[1:],
         "Portfolio (rent)": res.portfolio_rent[1:],
@@ -376,7 +396,7 @@ with tab3:
              "Insurance", "Maintenance", "HOA", "PMI", "Interest tax benefit (−)",
              "Own cost (net)", "Rent", "Own − rent",
              "Invested → buy portfolio", "Invested → rent portfolio"]
-    STOCKS = ["Home value", "Loan balance",
+    STOCKS = ["Home value", "Loan balance", "Home equity (if sold)",
               "Portfolio (buy)", "Portfolio (buy, after tax if sold)",
               "Portfolio (rent)", "Portfolio (rent, after tax if sold)",
               "Net worth — buy (if sold)", "Net worth — rent (if sold)", "Buy advantage"]
@@ -412,8 +432,11 @@ with tab3:
   investment return (net of annual drag), plus any invested surplus.
 - **… after tax if sold** = portfolio − capital-gains tax on embedded gains (value minus
   contributed dollars). Applied identically to both scenarios.
-- **Net worth — buy (if sold)** = after-tax portfolio + home value × (1 − selling costs)
-  − loan balance. Home-sale capital gains are not modeled.
+- **Home equity (if sold)** = home value × (1 − selling costs) − loan balance: the property
+  side of the buy scenario.
+- **Net worth — buy (if sold)** = Portfolio (buy, after tax if sold) + Home equity (if sold).
+  The two components are shown separately so you can see how much of the buy net worth is
+  liquid investments vs. locked in the property. Home-sale capital gains are not modeled.
 - **Buy advantage** is the headline number: buy minus rent net worth, both on an
   after-tax "if sold" basis.
 """)
