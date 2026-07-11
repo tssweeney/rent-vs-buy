@@ -25,7 +25,7 @@ Simplifications (documented in the app):
   $250k/$500k of gain anyway).
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import math
 
 
@@ -320,3 +320,164 @@ def sweep(base: Assumptions, prices, down_pcts, price_to_rent: float):
                 })
         grid.append(row)
     return grid
+
+
+@dataclass
+class RunwayResult:
+    """Result of a retirement-drawdown runway simulation.
+
+    Both scenarios draw housing costs (plus extra_monthly living expenses)
+    from their respective liquid investment portfolios until depletion.
+    No fairness rule — each side is fully independent.
+    """
+    months: list                  # 0..N month indices
+    liquid_buy: list              # buy-side portfolio value each month (0 after depletion)
+    liquid_rent: list             # rent-side portfolio value each month (0 after depletion)
+    monthly_need_buy: list        # gross housing outflow for buy each month (no tax benefit)
+    monthly_need_rent: list       # gross housing outflow for rent each month
+    home_equity: list             # home*(1-selling_cost_pct) - loan_balance each month
+    depleted_buy_month: int | None   # month portfolio hit zero (None = survives max_years)
+    depleted_rent_month: int | None  # month portfolio hit zero (None = survives max_years)
+
+
+def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> RunwayResult:
+    """Simulate retirement drawdown of housing costs from the liquid portfolio.
+
+    Both scenarios are simulated independently (no fairness rule).  The
+    owner and renter each draw their housing costs — plus extra_monthly
+    non-housing spending — out of their own starting liquid portfolio.
+    No income, so no mortgage-interest deduction benefit.
+
+    Buy scenario starting liquid portfolio:
+        max(capital - down - closing - one_time, 0)
+
+    Rent scenario starting liquid portfolio:
+        capital
+
+    Withdrawal mechanics each month (both scenarios):
+    1. Grow: value *= (1 + g_inv)
+    2. Gross up for embedded capital-gains tax:
+           gain_frac = max(0, 1 - basis/value)  if value > 0 else 0
+           sell = need / (1 - cap_gains_rate * gain_frac)
+    3. If sell >= value: depleted — record month, stop drawing.
+    4. Else: basis -= basis * (sell / value);  value -= sell.
+    """
+    n = max_years * 12
+
+    # --- Buy setup ---
+    down = a.price * a.down_pct
+    closing = a.price * a.closing_buy_pct
+    one_time = a.other_onetime_costs
+    upfront = down + closing + one_time
+
+    loan0 = a.price - down
+    pay = monthly_payment(loan0, a.mortgage_rate, a.term_years)
+    r_m = a.mortgage_rate / 12
+
+    # --- Shared investment growth ---
+    r_after = a.alt_return_annual * (1 - a.investment_tax_drag)
+    g_inv = (1 + r_after) ** (1 / 12) - 1
+    g_home = (1 + a.home_appreciation) ** (1 / 12) - 1
+
+    # Buy starting state
+    liq_buy = max(a.capital - upfront, 0.0)
+    basis_buy = liq_buy
+    home = a.price
+    assessed = a.price
+    bal = loan0
+
+    # Rent starting state
+    liq_rent = a.capital
+    basis_rent = a.capital
+    rent = a.monthly_rent
+
+    # Output series (month 0 = starting state, no flows yet)
+    months_v = [0]
+    lb_v = [liq_buy]
+    lr_v = [liq_rent]
+    nb_v = [0.0]      # month 0: no outflow
+    nr_v = [0.0]
+    he_v = [home * (1 - a.selling_cost_pct) - bal]
+
+    depleted_buy_month: int | None = None
+    depleted_rent_month: int | None = None
+
+    for m in range(1, n + 1):
+        # ---- grow home & compute buy housing need ----
+        home *= 1 + g_home
+
+        interest = bal * r_m
+        payment = min(pay, bal + interest)
+        principal = payment - interest
+        bal = max(bal - principal, 0.0)
+
+        pmi = 0.0
+        if loan0 > 0 and a.down_pct < 0.20 and (bal / a.price) > 0.78:
+            pmi = bal * a.pmi_rate / 12
+
+        prop_tax = assessed * a.property_tax_rate / 12
+        insurance = home * a.insurance_rate / 12
+        maintenance = home * a.maintenance_rate / 12
+
+        # No interest-deduction benefit (no income to deduct against)
+        need_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
+        need_rent = rent + extra_monthly
+
+        # Annual steps (rent, assessed value)
+        if m % 12 == 0:
+            assessed *= 1 + a.prop_tax_growth
+            rent *= 1 + a.rent_growth
+
+        # ---- buy portfolio withdrawal ----
+        if depleted_buy_month is None:
+            liq_buy *= 1 + g_inv
+            if liq_buy > 0:
+                gain_frac = max(0.0, 1.0 - basis_buy / liq_buy)
+                sell_buy = need_buy / (1.0 - a.cap_gains_rate * gain_frac)
+            else:
+                sell_buy = need_buy
+            if sell_buy >= liq_buy:
+                depleted_buy_month = m
+                liq_buy = 0.0
+                basis_buy = 0.0
+            else:
+                basis_buy -= basis_buy * (sell_buy / liq_buy)
+                liq_buy -= sell_buy
+
+        # ---- rent portfolio withdrawal ----
+        if depleted_rent_month is None:
+            liq_rent *= 1 + g_inv
+            if liq_rent > 0:
+                gain_frac = max(0.0, 1.0 - basis_rent / liq_rent)
+                sell_rent = need_rent / (1.0 - a.cap_gains_rate * gain_frac)
+            else:
+                sell_rent = need_rent
+            if sell_rent >= liq_rent:
+                depleted_rent_month = m
+                liq_rent = 0.0
+                basis_rent = 0.0
+            else:
+                basis_rent -= basis_rent * (sell_rent / liq_rent)
+                liq_rent -= sell_rent
+
+        months_v.append(m)
+        lb_v.append(liq_buy)
+        lr_v.append(liq_rent)
+        nb_v.append(need_buy)
+        nr_v.append(need_rent)
+        he_v.append(home * (1 - a.selling_cost_pct) - bal)
+
+        # Stop early once both are depleted
+        if depleted_buy_month is not None and depleted_rent_month is not None:
+            break
+
+    return RunwayResult(
+        months=months_v,
+        liquid_buy=lb_v,
+        liquid_rent=lr_v,
+        monthly_need_buy=nb_v,
+        monthly_need_rent=nr_v,
+        home_equity=he_v,
+        depleted_buy_month=depleted_buy_month,
+        depleted_rent_month=depleted_rent_month,
+    )
