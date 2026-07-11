@@ -90,6 +90,13 @@ with st.sidebar.expander("Scenarios", icon=":material/bookmark:"):
 
 st.sidebar.title("Assumptions")
 
+# ---- Section 0: The move ----------------------------------------
+st.sidebar.subheader("The move")
+price = st.sidebar.number_input("Purchase price ($)", 200_000, 5_000_000,
+                                step=25_000, key="price")
+down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct") / 100
+st.sidebar.caption(f"Down payment: {fmt(price * down_pct)}")
+
 # ---- Section 1: The deal ----------------------------------------
 st.sidebar.subheader("The deal")
 mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
@@ -114,7 +121,6 @@ home_appr = st.sidebar.slider("Home appreciation (%/yr)", 0.0, 10.0,
                               step=0.25, key="home_appr") / 100
 rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
                                 step=0.25, key="rent_growth") / 100
-_price_for_caption = st.session_state.get("price", DEFAULTS["price"])
 p2r = st.sidebar.slider(
     "Market price-to-rent ratio", 10.0, 45.0, step=0.5, key="p2r",
     help="Purchase price ÷ annual rent for comparable homes. "
@@ -122,8 +128,8 @@ p2r = st.sidebar.slider(
          "San Diego is roughly 25–30.",
 )
 st.sidebar.caption(
-    f"At ratio {p2r:.0f}, a {fmt(_price_for_caption)} home rents for "
-    f"≈ {fmt(rent_from_price(_price_for_caption, p2r))}/mo"
+    f"At ratio {p2r:.0f}, a {fmt(price)} home rents for "
+    f"≈ {fmt(rent_from_price(price, p2r))}/mo"
 )
 prop_tax = st.sidebar.slider("Property tax (initial, % of price)", 0.5, 2.5,
                              step=0.05, key="prop_tax") / 100
@@ -171,15 +177,13 @@ tab1, tab2, tab3 = st.tabs(["Single scenario", "Price × down payment sweep", "D
 
 # ================================================================ tab 1
 with tab1:
-    c1, c2, c3 = st.columns(3)
-    price = c1.number_input("Purchase price ($)", 200_000, 5_000_000, step=25_000, key="price")
-    down_pct = c2.slider("Down payment (%)", 3, 100, step=1, key="down_pct") / 100
-    derive_rent = c3.checkbox("Derive rent from price-to-rent ratio", key="derive_rent")
+    c1, c2 = st.columns(2)
+    derive_rent = c1.checkbox("Derive rent from price-to-rent ratio", key="derive_rent")
     if derive_rent:
         rent0 = rent_from_price(price, p2r)
-        c3.caption(f"Comparable rent: **{fmt(rent0)}/mo**")
+        c1.caption(f"Comparable rent: **{fmt(rent0)}/mo**")
     else:
-        rent0 = c3.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0")
+        rent0 = c2.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0")
 
     a = replace(base, price=price, down_pct=down_pct, monthly_rent=rent0)
     res = simulate(a)
