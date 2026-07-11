@@ -65,7 +65,7 @@ def compact(fig, height=340, legend=True, **layout):
 # unique key= to st.plotly_chart so the same figure can appear in multiple tabs
 # without triggering duplicate-element-ID errors.
 
-def networth_fig(res, yrs):
+def networth_fig(res, yrs, height=340):
     """Net worth over time: buy (if sold & mark-to-market) vs rent."""
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_buy_liq, name="Buy (if sold)",
@@ -76,7 +76,7 @@ def networth_fig(res, yrs):
                              line=dict(width=3)))
     fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent, name="Rent (mark-to-market)",
                              line=dict(dash="dot")))
-    return compact(fig, xaxis_title="Years", yaxis_title="$")
+    return compact(fig, height=height, xaxis_title="Years", yaxis_title="$")
 
 
 def networth_composition_fig(res, yrs, selling_pct):
@@ -96,7 +96,7 @@ def networth_composition_fig(res, yrs, selling_pct):
     return compact(figc, xaxis_title="Years", yaxis_title="$")
 
 
-def monthly_cost_fig(res, yrs):
+def monthly_cost_fig(res, yrs, height=340):
     """Stacked monthly owner cost breakdown with rent overlay."""
     fig2 = go.Figure()
     _x = yrs[1:]
@@ -126,7 +126,7 @@ def monthly_cost_fig(res, yrs):
         line=dict(width=2, dash="dash", color="gray"),
         hovertemplate="%{y:$,.0f}",
     ))
-    return compact(fig2, xaxis_title="Years", yaxis_title="$/mo")
+    return compact(fig2, height=height, xaxis_title="Years", yaxis_title="$/mo")
 
 
 def sensitivity_fig(a, alt_return, horizon):
@@ -146,7 +146,7 @@ def sensitivity_fig(a, alt_return, horizon):
                    yaxis_title=f"Buy − rent, yr {horizon} ($)")
 
 
-def liquid_portfolio_fig(rwy, fmtm_fn):
+def liquid_portfolio_fig(rwy, fmtm_fn, height=340):
     """Liquid portfolio over time for the runway scenario."""
     buy_dep = rwy.depleted_buy_month
     rent_dep = rwy.depleted_rent_month
@@ -210,10 +210,10 @@ def liquid_portfolio_fig(rwy, fmtm_fn):
             hoverinfo="skip",
         ))
 
-    return compact(fig_rwy, xaxis_title="Years", yaxis_title="$"), cutoff_m
+    return compact(fig_rwy, height=height, xaxis_title="Years", yaxis_title="$"), cutoff_m
 
 
-def runway_sweep_fig(sweep_data, rent_runway_months):
+def runway_sweep_fig(sweep_data, rent_runway_months, height=320):
     """Runway vs down-payment sweep chart. Returns (fig, peak_down, peak_yrs) or None."""
     valid = [(d, y) for d, y in sweep_data if y is not None]
     if not valid:
@@ -245,7 +245,7 @@ def runway_sweep_fig(sweep_data, rent_runway_months):
         hovertemplate=f"Peak runway: {peak_yrs:.1f} yrs at {peak_down:.0f}% down<extra></extra>",
     ))
 
-    return compact(fig_sweep, height=320,
+    return compact(fig_sweep, height=height,
                    xaxis_title="Down payment (%)",
                    yaxis_title="Buy runway (years)"), peak_down, peak_yrs
 
@@ -597,23 +597,27 @@ with tab0:
         st.subheader("Wealth")
 
         _ov_upfront = down + price * closing_pct + onetime
-        SMH = 150  # supplementary metric-card height (uniform across all three sections)
-        wc = st.columns(4)
-        wc[0].metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=SMH,
-                     help="After-tax portfolio + home value net of selling costs − loan balance")
-        wc[1].metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=SMH,
-                     help="Portfolio net of capital-gains tax if sold")
-        wc[2].metric("Cash at closing", fmt(_ov_upfront), border=True, height=SMH,
-                     help="Down payment + closing costs + one-time costs — leaves your capital on day one")
-        wc[3].metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=SMH,
-                     help="Capital left invested after closing — your emergency cushion in the buy scenario")
+        SMH = 120  # supplementary metric-card height; 4 × 120 ≈ 480 px rail ≈ chart height
+        _SECTION_H = 500  # chart height for single-chart sections (Wealth, Cash flow)
 
         _yrs = np.array(res.months) / 12
-        with st.container(border=True):
-            st.markdown("**Net worth over time**")
-            st.plotly_chart(networth_fig(res, _yrs), key="ov_networth")
-            st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
-                       "dotted = mark-to-market.")
+
+        _wleft, _wright = st.columns([1, 4], gap="medium")
+        with _wleft:
+            st.metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=SMH,
+                      help="After-tax portfolio + home value net of selling costs − loan balance")
+            st.metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=SMH,
+                      help="Portfolio net of capital-gains tax if sold")
+            st.metric("Cash at closing", fmt(_ov_upfront), border=True, height=SMH,
+                      help="Down payment + closing costs + one-time costs — leaves your capital on day one")
+            st.metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=SMH,
+                      help="Capital left invested after closing — your emergency cushion in the buy scenario")
+        with _wright:
+            with st.container(border=True):
+                st.markdown("**Net worth over time**")
+                st.plotly_chart(networth_fig(res, _yrs, height=_SECTION_H), key="ov_networth")
+                st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
+                           "dotted = mark-to-market.")
 
         st.divider()
 
@@ -625,25 +629,26 @@ with tab0:
         _tax_benefit_m1 = res.tax_benefit_m[1]
         _principal_m1 = res.principal_m[1]
 
-        cfc = st.columns(4)
-        cfc[0].metric("Own cost (mo 1, net)", fmt(_own_cost_m1), border=True, height=SMH,
+        _cfleft, _cfright = st.columns([1, 4], gap="medium")
+        with _cfleft:
+            st.metric("Own cost (mo 1, net)", fmt(_own_cost_m1), border=True, height=SMH,
                       help="P&I + property tax + insurance + maintenance + HOA + PMI "
                            "minus the interest-deduction benefit — your true monthly outflow in month 1.")
-        cfc[1].metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=SMH,
+            st.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=SMH,
                       help="Month-1 rent for the comparable home. Grows at the rent-growth "
                            "rate each year.")
-        cfc[2].metric("Interest deduction (mo 1)", fmt(_tax_benefit_m1), border=True, height=SMH,
+            st.metric("Interest deduction (mo 1)", fmt(_tax_benefit_m1), border=True, height=SMH,
                       help="Marginal rate × deductible interest in month 1. Reduces the "
                            "owner's net outflow; shrinks over time as the loan amortises.")
-        cfc[3].metric("Principal portion (mo 1)", fmt(_principal_m1), border=True, height=SMH,
+            st.metric("Principal portion (mo 1)", fmt(_principal_m1), border=True, height=SMH,
                       help="Principal repaid in month 1 — cash out of your pocket, but it "
                            "builds equity rather than being a pure cost.")
-
-        with st.container(border=True):
-            st.markdown("**Monthly owner cost breakdown**")
-            st.plotly_chart(monthly_cost_fig(res, _yrs), key="ov_monthly_cost")
-            st.caption("Bands stack to gross cost; the net line subtracts the interest "
-                       "deduction. Principal builds equity — cash out, but not lost.")
+        with _cfright:
+            with st.container(border=True):
+                st.markdown("**Monthly owner cost breakdown**")
+                st.plotly_chart(monthly_cost_fig(res, _yrs, height=_SECTION_H), key="ov_monthly_cost")
+                st.caption("Bands stack to gross cost; the net line subtracts the interest "
+                           "deduction. Principal builds equity — cash out, but not lost.")
 
         st.divider()
 
@@ -660,51 +665,53 @@ with tab0:
         _burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
         _burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
 
-        rc = st.columns(4)
-        rc[0].metric("Total buy runway", _buy_label, border=True, height=SMH,
-                     help="How long the buy scenario's combined portfolio lasts — first as an "
-                          "owner, then (after the forced sale) as a renter at then-current market "
-                          "rent. '100+ yrs' = sustainable over the full simulation horizon.")
-        rc[1].metric("Rent runway", _rent_label, border=True, height=SMH,
-                     help="How long the renter's portfolio (all investable capital) lasts paying "
-                          "rent. '100+ yrs' = sustainable withdrawal rate over 100 years.")
-        rc[2].metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=SMH,
-                     help="Owner's total month-1 outflow: P&I + property tax + insurance + "
-                          "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
-        rc[3].metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=SMH,
-                     help="Renter's month-1 outflow: the rent payment.")
+        _RETIRE_CHART_H = 240  # two charts stacked in the right column; ~240 px each
 
-        rc1, rc2 = st.columns(2)
-        _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm)
-        with rc1.container(border=True):
-            st.markdown("**Liquid portfolio over time**")
-            st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
-            _sale_note_ov = (
-                f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
-                f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
-                if rwy.sale_month is not None else ""
-            )
-            st.caption(
-                "Each portfolio is drawn down by its own housing costs with no income. "
-                "Growth continues until the portfolio hits zero. "
-                "Buy starts with less cash (down payment + closing already spent) "
-                "but may have lower ongoing costs depending on loan size." + _sale_note_ov
-            )
-
-        _sweep_data = _runway_sweep(base, price, rent0)
-        _fig_sweep, _peak_down, _peak_yrs = runway_sweep_fig(
-            _sweep_data, rwy.depleted_rent_month)
-        with rc2.container(border=True):
-            st.markdown("**Runway vs. down payment at current price**")
-            if _fig_sweep is not None:
-                st.plotly_chart(_fig_sweep, key="ov_runway_sweep")
-                st.caption(
-                    f"Total buy runway (owner + post-sale renter phase); peak {_peak_yrs:.1f} yrs "
-                    f"at {_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
-                    f"infeasible cells excluded."
+        _rleft, _rright = st.columns([1, 4], gap="medium")
+        with _rleft:
+            st.metric("Total buy runway", _buy_label, border=True, height=SMH,
+                      help="How long the buy scenario's combined portfolio lasts — first as an "
+                           "owner, then (after the forced sale) as a renter at then-current market "
+                           "rent. '100+ yrs' = sustainable over the full simulation horizon.")
+            st.metric("Rent runway", _rent_label, border=True, height=SMH,
+                      help="How long the renter's portfolio (all investable capital) lasts paying "
+                           "rent. '100+ yrs' = sustainable withdrawal rate over 100 years.")
+            st.metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=SMH,
+                      help="Owner's total month-1 outflow: P&I + property tax + insurance + "
+                           "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
+            st.metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=SMH,
+                      help="Renter's month-1 outflow: the rent payment.")
+        with _rright:
+            _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm, height=_RETIRE_CHART_H)
+            with st.container(border=True):
+                st.markdown("**Liquid portfolio over time**")
+                st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
+                _sale_note_ov = (
+                    f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
+                    f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
+                    if rwy.sale_month is not None else ""
                 )
-            else:
-                st.info("No feasible down payments at the current price and capital.")
+                st.caption(
+                    "Each portfolio is drawn down by its own housing costs with no income. "
+                    "Growth continues until the portfolio hits zero. "
+                    "Buy starts with less cash (down payment + closing already spent) "
+                    "but may have lower ongoing costs depending on loan size." + _sale_note_ov
+                )
+
+            _sweep_data = _runway_sweep(base, price, rent0)
+            _fig_sweep, _peak_down, _peak_yrs = runway_sweep_fig(
+                _sweep_data, rwy.depleted_rent_month, height=_RETIRE_CHART_H)
+            with st.container(border=True):
+                st.markdown("**Runway vs. down payment at current price**")
+                if _fig_sweep is not None:
+                    st.plotly_chart(_fig_sweep, key="ov_runway_sweep")
+                    st.caption(
+                        f"Total buy runway (owner + post-sale renter phase); peak {_peak_yrs:.1f} yrs "
+                        f"at {_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
+                        f"infeasible cells excluded."
+                    )
+                else:
+                    st.info("No feasible down payments at the current price and capital.")
 
 # ================================================================ tab 3 (Calculations)
 with tab3:
