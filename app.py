@@ -49,6 +49,11 @@ def fmt(x):
     return f"${x:,.0f}"
 
 
+def fmtm(x):
+    """Markdown-safe currency: `\\$` stops Streamlit treating $...$ as LaTeX math."""
+    return f"\\${x:,.0f}"
+
+
 # ---------------------------------------------------------------- sidebar
 def _save_current_scenario():
     name = st.session_state.get("scenario_name", "").strip()
@@ -77,14 +82,19 @@ def _delete_selected_scenario():
 
 
 with st.sidebar.expander("Scenarios", icon=":material/bookmark:"):
-    st.text_input("Scenario name", key="scenario_name", placeholder="e.g. Base case")
-    st.button("Save", icon=":material/save:", on_click=_save_current_scenario)
+    st.text_input("Scenario name", key="scenario_name", placeholder="e.g. Base case",
+                  help="Name to save the current settings under. Reusing a name overwrites it.")
+    st.button("Save", icon=":material/save:", on_click=_save_current_scenario,
+              help="Snapshot every input (sidebar + tabs) to scenarios.json")
     _saved = scenario_store.load_scenarios()
     if _saved:
-        st.selectbox("Saved scenarios", sorted(_saved), key="scenario_sel")
+        st.selectbox("Saved scenarios", sorted(_saved), key="scenario_sel",
+                     help="Pick a saved snapshot, then Load or Delete it")
         _lc, _dc = st.columns(2)
-        _lc.button("Load", icon=":material/upload:", on_click=_load_selected_scenario)
-        _dc.button("Delete", icon=":material/delete:", on_click=_delete_selected_scenario)
+        _lc.button("Load", icon=":material/upload:", on_click=_load_selected_scenario,
+                   help="Restore every input from the selected scenario")
+        _dc.button("Delete", icon=":material/delete:", on_click=_delete_selected_scenario,
+                   help="Remove the selected scenario permanently")
     else:
         st.caption("No saved scenarios yet.")
 
@@ -93,20 +103,35 @@ st.sidebar.title("Assumptions")
 # ---- Section 0: The move ----------------------------------------
 st.sidebar.subheader("The move")
 price = st.sidebar.number_input("Purchase price ($)", 200_000, 5_000_000,
-                                step=25_000, key="price")
-down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct") / 100
-st.sidebar.caption(f"Down payment: {fmt(price * down_pct)}")
+                                step=25_000, key="price",
+                                help="Contract price of the home. Drives the loan size, "
+                                     "property tax, and the comparable rent.")
+down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct",
+                             help="Share of the price paid in cash at closing; the rest "
+                                  "is the mortgage. Below 20% adds PMI until you reach "
+                                  "22% equity.") / 100
+st.sidebar.caption(f"Down payment: {fmtm(price * down_pct)}")
 
 # ---- Section 1: The deal ----------------------------------------
 st.sidebar.subheader("The deal")
 mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
-                              step=0.125, key="mort_rate") / 100
-term = st.sidebar.radio("Term (years)", [15, 30], horizontal=True, key="term")
+                              step=0.125, key="mort_rate",
+                              help="Fixed note rate from your lender quote (not APR — "
+                                   "lender fees belong in closing costs).") / 100
+term = st.sidebar.radio("Term (years)", [15, 30], horizontal=True, key="term",
+                        help="Loan length. 15-year loans usually price 0.5–0.75% below "
+                             "30-year but roughly double the principal portion of P&I.")
 closing_pct = st.sidebar.slider("Buy closing costs (% of price)", 0.0, 5.0,
-                                step=0.25, key="closing_pct") / 100
+                                step=0.25, key="closing_pct",
+                                help="Escrow, title, origination, inspection etc., paid in "
+                                     "cash at closing on top of the down payment.") / 100
 onetime = st.sidebar.slider("Other one-time costs ($, moving etc.)", 0, 100_000,
-                            step=5_000, key="onetime")
-hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa")
+                            step=5_000, key="onetime",
+                            help="Movers, immediate repairs, furniture — cash spent once "
+                                 "at move-in, gone from the buy-side portfolio.")
+hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa",
+                              help="Monthly homeowners-association dues, if any. Flat — "
+                                   "does not grow in this model.")
 
 # ---- Section 2: The market --------------------------------------
 st.sidebar.subheader("The market")
@@ -118,9 +143,14 @@ alt_return = st.sidebar.slider(
          "returned ~7–10% nominal before tax.",
 ) / 100
 home_appr = st.sidebar.slider("Home appreciation (%/yr)", 0.0, 10.0,
-                              step=0.25, key="home_appr") / 100
+                              step=0.25, key="home_appr",
+                              help="Nominal annual growth of the home's market value. "
+                                   "Case-Shiller San Diego compounded ≈5.8%/yr over "
+                                   "1987–2025; default is a slightly conservative 5.5%.") / 100
 rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
-                                step=0.25, key="rent_growth") / 100
+                                step=0.25, key="rent_growth",
+                                help="Annual rent increases in the rent scenario. San Diego "
+                                     "long run ≈4%; recent years 2.5–3.5%.") / 100
 p2r = st.sidebar.slider(
     "Market price-to-rent ratio", 10.0, 45.0, step=0.5, key="p2r",
     help="Purchase price ÷ annual rent for comparable homes. "
@@ -128,26 +158,46 @@ p2r = st.sidebar.slider(
          "San Diego is roughly 25–30.",
 )
 st.sidebar.caption(
-    f"At ratio {p2r:.0f}, a {fmt(price)} home rents for "
-    f"≈ {fmt(rent_from_price(price, p2r))}/mo"
+    f"At ratio {p2r:.0f}, a {fmtm(price)} home rents for "
+    f"≈ {fmtm(rent_from_price(price, p2r))}/mo"
 )
 prop_tax = st.sidebar.slider("Property tax (initial, % of price)", 0.5, 2.5,
-                             step=0.05, key="prop_tax") / 100
+                             step=0.05, key="prop_tax",
+                             help="First-year effective rate on the purchase price "
+                                  "(San Diego ≈1.1–1.25% incl. Mello-Roos/bonds). The "
+                                  "assessed value then grows only 2%/yr under Prop 13.") / 100
 insurance = st.sidebar.slider("Insurance (% of value/yr)", 0.0, 1.0,
-                              step=0.05, key="insurance") / 100
+                              step=0.05, key="insurance",
+                              help="Homeowners insurance as a share of current market "
+                                   "value, per year.") / 100
 maintenance = st.sidebar.slider("Maintenance (% of value/yr)", 0.0, 3.0,
-                                step=0.25, key="maintenance") / 100
+                                step=0.25, key="maintenance",
+                                help="Repairs and upkeep as a share of current market "
+                                     "value per year; 1% is the common rule of thumb.") / 100
 selling_pct = st.sidebar.slider("Selling costs at exit (% of value)", 0.0, 10.0,
-                                step=0.5, key="selling_pct") / 100
+                                step=0.5, key="selling_pct",
+                                help="Agent commissions + seller closing costs, subtracted "
+                                     "from home value in every 'if sold' figure.") / 100
 
 # ---- Section 3: Personal ----------------------------------------
 st.sidebar.subheader("Personal")
 capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
-                                  step=50_000, key="capital")
-horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon")
+                                  step=50_000, key="capital",
+                                  help="Total cash you're deploying. Buy: pays down payment "
+                                       "+ closing + one-time costs, remainder is invested. "
+                                       "Rent: all of it is invested.")
+horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon",
+                            help="When the two scenarios are compared: both are valued "
+                                 "'if sold' at this point.")
 marginal = st.sidebar.slider("Combined marginal tax rate (%)", 0.0, 55.0,
-                             step=1.0, key="marginal") / 100
-deduct = st.sidebar.checkbox("Deduct mortgage interest (≤ $750k of balance)", key="deduct")
+                             step=1.0, key="marginal",
+                             help="Federal + California rate on your last dollar of income; "
+                                  "sets the value of the mortgage-interest deduction. "
+                                  "~42% around $300k single in CA.") / 100
+deduct = st.sidebar.checkbox("Deduct mortgage interest (≤ $750k of balance)", key="deduct",
+                             help="Reduces the owner's monthly cost by marginal rate × "
+                                  "interest on the first $750k of loan balance. Assumes "
+                                  "you itemize.")
 inv_tax = st.sidebar.slider(
     "Annual tax on investment income (%)", 0.0, 50.0, step=1.0,
     key="inv_tax",
@@ -178,12 +228,17 @@ tab1, tab2, tab3 = st.tabs(["Single scenario", "Price × down payment sweep", "D
 # ================================================================ tab 1
 with tab1:
     c1, c2 = st.columns(2)
-    derive_rent = c1.checkbox("Derive rent from price-to-rent ratio", key="derive_rent")
+    derive_rent = c1.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
+                              help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
+                                   "so it tracks the purchase price. Off: type a rent "
+                                   "you've actually seen on the market.")
     if derive_rent:
         rent0 = rent_from_price(price, p2r)
-        c1.caption(f"Comparable rent: **{fmt(rent0)}/mo**")
+        c1.caption(f"Comparable rent: **{fmtm(rent0)}/mo**")
     else:
-        rent0 = c2.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0")
+        rent0 = c2.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0",
+                                help="Starting monthly rent for the comparable home; grows "
+                                     "at the rent-growth rate each year.")
 
     a = replace(base, price=price, down_pct=down_pct, monthly_rent=rent0)
     res = simulate(a)
@@ -191,7 +246,7 @@ with tab1:
     down = price * down_pct
     upfront = down + price * closing_pct + onetime
     if not res.feasible:
-        st.error(f"Infeasible: upfront cash needed ({fmt(upfront)}) exceeds capital ({fmt(capital)}).")
+        st.error(f"Infeasible: upfront cash needed ({fmtm(upfront)}) exceeds capital ({fmtm(capital)}).")
     else:
         nw_buy = res.net_worth_buy_liq[-1]
         nw_rent = res.net_worth_rent_liq[-1]
@@ -202,21 +257,31 @@ with tab1:
                   help="After-tax portfolio + home value net of selling costs − loan balance")
         m2.metric(f"Net worth in {horizon} yrs — RENT", fmt(nw_rent),
                   help="Portfolio net of capital-gains tax if sold")
-        m3.metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent")
+        m3.metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
+                  help="Buy net worth minus rent net worth at the horizon, both after "
+                       "taxes and selling costs. Positive = buying wins.")
         if res.breakeven_month > 0:
             m4.metric("Breakeven", f"year {res.breakeven_month / 12:.1f}",
                       help="First month buying (after selling costs) beats renting")
         else:
-            m4.metric("Breakeven", "never (in horizon)")
+            m4.metric("Breakeven", "never (in horizon)",
+                      help="Buying never catches renting within the horizon; extend the "
+                           "horizon or change assumptions to see where it would.")
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cash at closing", fmt(upfront))
-        m2.metric("Liquid reserve after closing", fmt(capital - upfront))
+        m1.metric("Cash at closing", fmt(upfront),
+                  help="Down payment + closing costs + one-time costs — leaves your "
+                       "capital on day one")
+        m2.metric("Liquid reserve after closing", fmt(capital - upfront),
+                  help="Capital left invested after closing — your emergency cushion in "
+                       "the buy scenario")
         m3.metric("First-year monthly cost (net)", fmt(res.outflow_buy[1]),
                   help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
         m4.metric("vs. rent", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
                   delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1] else "buy costs less/mo",
-                  delta_color="off")
+                  delta_color="off",
+                  help="Owner's net monthly cost minus rent in month 1. Whichever side is "
+                       "cheaper invests this difference every month.")
 
         yrs = np.array(res.months) / 12
         fig = go.Figure()
@@ -231,6 +296,9 @@ with tab1:
         fig.update_layout(title="Net worth over time", xaxis_title="Years",
                           yaxis_title="Net worth ($)", hovermode="x unified", height=450)
         st.plotly_chart(fig)
+        st.caption("Solid lines are 'if sold today' (after selling costs and capital-gains "
+                   "tax); dotted lines are mark-to-market (no exit costs). Buy starts lower "
+                   "because closing + selling costs hit immediately.")
 
         # composition of buy-side net worth: investments vs property equity
         equity_liq = [h * (1 - selling_pct) - b
@@ -249,6 +317,9 @@ with tab1:
                            xaxis_title="Years", yaxis_title="$",
                            hovermode="x unified", height=400)
         st.plotly_chart(figc)
+        st.caption("The stacked bands sum to the buy 'if sold' line above. The investments "
+                   "band is liquid; the home-equity band is only accessible by selling or "
+                   "borrowing against the house.")
 
         colA, colB = st.columns(2)
         with colA:
@@ -258,6 +329,8 @@ with tab1:
             fig2.update_layout(title="Monthly housing outflow", xaxis_title="Years",
                                yaxis_title="$/month", hovermode="x unified", height=380)
             st.plotly_chart(fig2)
+            st.caption("Owning steps down when PMI drops off and creeps up with "
+                       "value-linked costs; rent compounds every year.")
         with colB:
             # sensitivity: buy advantage vs investment return
             rates = np.arange(0.03, 0.111, 0.005)
@@ -274,6 +347,8 @@ with tab1:
                                xaxis_title="Investment return (pre-tax, %)",
                                yaxis_title=f"Buy − rent at year {horizon} ($)", height=380)
             st.plotly_chart(fig3)
+            st.caption("The single biggest swing factor: where this curve crosses zero is "
+                       "the investment return at which renting starts to win.")
 
 # ================================================================ tab 2
 with tab2:
@@ -284,11 +359,18 @@ with tab2:
     )
     cc1, cc2, cc3 = st.columns(3)
     min_reserve = cc1.number_input("Constraint: min liquid reserve after closing ($)",
-                                   0, 2_000_000, step=25_000, key="min_reserve")
+                                   0, 2_000_000, step=25_000, key="min_reserve",
+                                   help="Cells leaving less cash than this after down "
+                                        "payment + closing are excluded from the "
+                                        "recommendation (still shown on the heatmap).")
     max_monthly = cc2.number_input("Constraint: max net monthly cost ($, 0 = no limit)",
-                                   0, 50_000, step=500, key="max_monthly")
+                                   0, 50_000, step=500, key="max_monthly",
+                                   help="Excludes cells whose first-year net monthly owner "
+                                        "cost exceeds this comfort ceiling.")
     pmax = cc3.number_input("Max price to explore ($)", 500_000, 5_000_000,
-                            step=50_000, key="pmax")
+                            step=50_000, key="pmax",
+                            help="Top of the price range swept on the heatmap (bottom is "
+                                 "$800k, in $50k steps).")
 
     prices = np.arange(800_000, pmax + 1, 50_000)
     if prices.size == 0:  # pmax below the sweep floor
@@ -323,11 +405,11 @@ with tab2:
         i, j = np.unravel_index(np.argmax(masked), masked.shape)
         best_p, best_d = prices[i], downs[j]
         st.success(
-            f"**Best cell under your constraints:** buy at **{fmt(best_p)}** with "
-            f"**{best_d:.0%} down** ({fmt(best_p * best_d)}) → advantage of "
-            f"**{fmt(z[i, j])}** over renting at year {horizon}. "
-            f"Reserve after closing: {fmt(reserve[i, j])}; "
-            f"first-year net monthly cost ≈ {fmt(mout[i, j])}."
+            f"**Best cell under your constraints:** buy at **{fmtm(best_p)}** with "
+            f"**{best_d:.0%} down** ({fmtm(best_p * best_d)}) → advantage of "
+            f"**{fmtm(z[i, j])}** over renting at year {horizon}. "
+            f"Reserve after closing: {fmtm(reserve[i, j])}; "
+            f"first-year net monthly cost ≈ {fmtm(mout[i, j])}."
         )
         # best down per price
         rows = []
@@ -340,14 +422,35 @@ with tab2:
                              "Advantage vs rent": fmt(z[ii, jj]),
                              "Reserve": fmt(reserve[ii, jj]),
                              "Net monthly (yr 1)": fmt(mout[ii, jj])})
-        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows),
+            hide_index=True,
+            column_config={
+                "Price": st.column_config.TextColumn(
+                    help="Purchase price for this row"),
+                "Best down %": st.column_config.TextColumn(
+                    help="Down payment maximizing the buy advantage at this price, "
+                         "under your constraints"),
+                "Down $": st.column_config.TextColumn(
+                    help="That down payment in dollars"),
+                "Advantage vs rent": st.column_config.TextColumn(
+                    help="Buy minus rent net worth at the horizon, after taxes and "
+                         "selling costs"),
+                "Reserve": st.column_config.TextColumn(
+                    help="Liquid cash left after closing"),
+                "Net monthly (yr 1)": st.column_config.TextColumn(
+                    help="First-year net monthly owner cost"),
+            },
+        )
     else:
         st.warning("No (price, down) combination satisfies your constraints.")
 
     st.markdown(f"**Slice: advantage vs. down payment at a fixed price**")
     sp = st.select_slider("Price", options=[int(p) for p in prices], value=1_400_000
                           if 1_400_000 in prices else int(prices[len(prices)//2]),
-                          format_func=fmt)
+                          format_func=fmt,
+                          help="Pick a price to see how the advantage changes with "
+                               "down payment alone.")
     ii = int(np.where(prices == sp)[0][0])
     figs = go.Figure()
     figs.add_trace(go.Scatter(x=downs * 100, y=z[ii], mode="lines+markers"))
@@ -361,7 +464,9 @@ with tab3:
     st.markdown("Full mechanics of the scenario from the **Single scenario** tab, "
                 "one row per period — like a spreadsheet.")
     gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly",
-                                label_visibility="collapsed")
+                                label_visibility="collapsed",
+                                help="Yearly sums the flows and shows end-of-year "
+                                     "balances; Monthly shows every row.")
 
     # row 0 = closing day: flows are zero, balances are the starting position
     df_m = pd.DataFrame({
@@ -406,6 +511,46 @@ with tab3:
               "Portfolio (rent)", "Portfolio (rent, after tax if sold)",
               "Net worth — buy (if sold)", "Net worth — rent (if sold)", "Buy advantage"]
 
+    COL_HELP = {
+        "Month": "Month number; row 0 is closing day (starting balances, no flows).",
+        "Year": "Year number; row 0 is closing day (starting balances, no flows).",
+        "P&I payment": "Fixed monthly principal & interest on the mortgage.",
+        "  of which interest": "Interest portion of the P&I payment (shrinks over time).",
+        "  of which principal": "Principal portion of the P&I payment — builds equity.",
+        "Property tax": "Tax on the assessed value, which grows 2%/yr under Prop 13.",
+        "Insurance": "Homeowners insurance: a share of current market value per year.",
+        "Maintenance": "Repairs and upkeep: a share of current market value per year.",
+        "HOA": "Flat monthly homeowners-association dues.",
+        "PMI": "Mortgage insurance while down < 20%; drops at 78% of purchase price.",
+        "Interest tax benefit (−)": "Marginal rate × deductible interest (≤ 750k of "
+                                    "balance); reduces the owner's net cost.",
+        "Own cost (net)": "P&I + property tax + insurance + maintenance + HOA + PMI − "
+                          "interest tax benefit: the owner's true outflow.",
+        "Rent": "Rent for the comparable home; grows at the rent-growth rate yearly.",
+        "Own − rent": "Cash-flow gap between the two lifestyles; the cheaper side "
+                      "invests this difference.",
+        "Invested → buy portfolio": "Surplus invested by the owner when owning is "
+                                    "cheaper than renting that period.",
+        "Invested → rent portfolio": "Surplus invested by the renter when renting is "
+                                     "cheaper than owning that period.",
+        "Home value": "Market value, compounding at the home-appreciation rate.",
+        "Loan balance": "Remaining mortgage principal at the end of the period.",
+        "Home equity (if sold)": "Home value × (1 − selling costs) − loan balance.",
+        "Portfolio (buy)": "Owner's investments: capital left after closing, "
+                           "compounding plus any invested surplus.",
+        "Portfolio (buy, after tax if sold)": "Portfolio (buy) minus capital-gains tax "
+                                              "on gains above contributed dollars.",
+        "Portfolio (rent)": "Renter's investments: all capital compounding plus any "
+                            "invested surplus.",
+        "Portfolio (rent, after tax if sold)": "Portfolio (rent) minus capital-gains "
+                                               "tax on gains above contributed dollars.",
+        "Net worth — buy (if sold)": "Portfolio (buy, after tax if sold) + "
+                                     "Home equity (if sold).",
+        "Net worth — rent (if sold)": "Portfolio (rent, after tax if sold).",
+        "Buy advantage": "Buy minus rent net worth, both after-tax 'if sold' — "
+                         "the headline number.",
+    }
+
     if gran == "Yearly":
         df_m["Year"] = (df_m["Month"] - 1) // 12 + 1  # month 0 -> year 0 (closing)
         agg = {c: "sum" for c in FLOWS} | {c: "last" for c in STOCKS}
@@ -419,12 +564,16 @@ with tab3:
 
     st.dataframe(
         df,
-        column_config={period_col: st.column_config.NumberColumn(pinned=True)}
-        | {c: st.column_config.NumberColumn(format="$%d") for c in FLOWS + STOCKS},
+        column_config={period_col: st.column_config.NumberColumn(
+            pinned=True, help=COL_HELP.get(period_col))}
+        | {c: st.column_config.NumberColumn(format="$%d", help=COL_HELP.get(c))
+           for c in FLOWS + STOCKS},
         hide_index=True,
     )
     st.download_button("Download as CSV", df.to_csv(index=False),
-                       "rent_vs_buy_mechanics.csv", "text/csv")
+                       "rent_vs_buy_mechanics.csv", "text/csv",
+                       help="Download the table above (at the current granularity) "
+                            "for your own spreadsheet analysis.")
 
     with st.expander("How to read this table"):
         st.markdown("""
@@ -458,11 +607,11 @@ with tab3:
   tax on unrealized gains, applied in every "if sold" figure for **both** scenarios.
   Cost basis = dollars contributed; gains above basis are taxed at the sale rate.
 - **Interest deduction:** combined marginal rate × interest on the deductible share of the
-  balance (capped at $750k of balance). Assumes you itemize either way.
+  balance (capped at \\$750k of balance). Assumes you itemize either way.
 - **Prop 13:** assessed value (property tax base) grows at 2%/yr regardless of market value.
 - **PMI:** charged when down < 20%, drops when the balance falls below 78% of purchase price.
 - **Home sale:** "if sold" subtracts selling costs but **not** capital-gains tax on the home
-  (§121 excludes the first $250k single / $500k married of gain; big appreciation beyond
+  (§121 excludes the first \\$250k single / \\$500k married of gain; big appreciation beyond
   that is untaxed in this model, which flatters buying slightly).
 - All figures are **nominal** dollars.
 """)
