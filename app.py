@@ -403,35 +403,45 @@ with tab0:
             _runway_adv_delta_color = "normal" if _runway_adv_yrs > 0 else "inverse"
 
         OMH = 150  # overview metric-card height
-        # Two rows of 3 (3+3 rather than 6 across)
-        ov1 = st.columns(3)
-        ov1[0].metric("Buy advantage", fmt(_delta),
+        # Three labeled category columns
+        ov_wealth, ov_cashflow, ov_retire = st.columns(3, gap="medium")
+
+        with ov_wealth:
+            st.markdown("**Wealth**")
+            st.caption("Where does my net worth end up?")
+            st.metric("Buy advantage", fmt(_delta),
                       delta=f"{_delta / _nw_rent * 100:+.1f}% vs rent",
                       border=True, height=OMH,
                       help="Liquid net worth difference at the horizon (buy minus rent), "
                            "after taxes and selling costs. Positive = buying wins.")
-        ov1[1].metric("Net worth breakeven", _be_label, border=True, height=OMH,
+            st.metric("Net worth breakeven", _be_label, border=True, height=OMH,
                       help="First month buying net worth (after selling costs) "
                            "exceeds renting net worth — and stays ahead.")
-        ov1[2].metric("Monthly cost vs rent (mo 1)", fmt(_cost_diff),
+
+        with ov_cashflow:
+            st.markdown("**Cash flow**")
+            st.caption("What does each month cost me?")
+            st.metric("Monthly cost vs rent (mo 1)", fmt(_cost_diff),
                       delta="buy costs more/mo" if _cost_diff > 0 else "buy costs less/mo",
                       delta_color="off", border=True, height=OMH,
                       help="Owner's net monthly cost minus rent in month 1. "
                            "The cheaper side invests the difference every month.")
-
-        ov2 = st.columns(3)
-        ov2[0].metric("Monthly cost breakeven", _cash_be_label, border=True, height=OMH,
+            st.metric("Monthly cost breakeven", _cash_be_label, border=True, height=OMH,
                       help="First month the owner's net monthly cost is at or below rent — "
                            "i.e., when owning becomes cheaper month-to-month. "
                            "This is cash-flow breakeven, distinct from net-worth breakeven: "
                            "even before this point the buy scenario may be building wealth "
                            "through equity, but owning still costs more out-of-pocket.")
-        ov2[1].metric("Forced sale", _sale_label, border=True, height=OMH,
+
+        with ov_retire:
+            st.markdown("**Retirement**")
+            st.caption("How long could I survive with no income?")
+            st.metric("Forced sale", _sale_label, border=True, height=OMH,
                       help="Year the owner's liquid portfolio runs dry and the house must "
                            "be sold. 'never' means the portfolio sustains ownership costs "
                            "indefinitely (under the Runway tab's assumptions: no income, "
                            "extra monthly spend drawn from portfolio).")
-        ov2[2].metric("Buy runway advantage", _runway_adv_label,
+            st.metric("Buy runway advantage", _runway_adv_label,
                       delta=_runway_adv_delta, delta_color=_runway_adv_delta_color,
                       border=True, height=OMH,
                       help="Total buy runway minus rent runway, in years. "
