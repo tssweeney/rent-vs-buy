@@ -741,7 +741,10 @@ with tab5:
         "Two modeling choices: (1) no mortgage-interest deduction — no income "
         "to deduct against; (2) each withdrawal is grossed up for the embedded "
         "capital-gains tax on portfolio gains, so you sell more shares than you "
-        "actually spend."
+        "actually spend. "
+        "When the owner's cash runs out, the house is sold (net of selling costs, "
+        "loan repaid, gains untaxed per §121 simplification) and the proceeds fund "
+        "renting the comparable home at then-current market rent."
     )
 
     extra_spend = st.number_input(
@@ -765,40 +768,39 @@ with tab5:
     buy_label = _runway_label(rwy.depleted_buy_month)
     rent_label = _runway_label(rwy.depleted_rent_month)
 
-    # Home equity at depletion (or — if buy never depletes)
-    if rwy.depleted_buy_month is not None:
-        he_at_depletion = rwy.home_equity[rwy.depleted_buy_month]
-        he_label = fmt(he_at_depletion)
-    else:
-        he_label = "—"
+    # Sale info
+    sale_yr_label = f"yr {rwy.sale_month / 12:.1f}" if rwy.sale_month is not None else "never"
+    sale_proc_label = fmtm(rwy.sale_proceeds) if rwy.sale_proceeds is not None else "—"
 
     # Month-1 burn rates (index 1 in the series)
     burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
     burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
 
     with st.container(horizontal=True):
-        st.metric("Buy runway", buy_label, border=True,
-                  help="How long the owner's liquid portfolio (capital minus down "
-                       "payment, closing costs, and one-time costs) lasts paying "
-                       "all housing costs with no income. '100+ yrs' means the "
-                       "portfolio survives the full simulation at a sustainable "
-                       "withdrawal rate.")
+        st.metric("Forced sale", sale_yr_label, border=True,
+                  help="Year the owner's liquid portfolio runs dry and the house is "
+                       "force-sold. 'never' means the portfolio sustains ownership "
+                       "costs indefinitely (no sale ever needed).")
+        st.metric("Sale proceeds", sale_proc_label, border=True,
+                  help="Net cash from the forced sale: home value × (1 − selling "
+                       "costs) − remaining loan balance. Injected into the liquid "
+                       "portfolio to fund renting. Home-sale capital gains are not "
+                       "modeled (§121 simplification).")
+        st.metric("Total buy runway", buy_label, border=True,
+                  help="How long the buy scenario's combined portfolio lasts — first "
+                       "as an owner, then (after the forced sale) as a renter at "
+                       "then-current market rent. '100+ yrs' = sustainable over the "
+                       "full simulation horizon.")
         st.metric("Rent runway", rent_label, border=True,
                   help="How long the renter's portfolio (all investable capital) "
                        "lasts paying rent plus extra spending. '100+ yrs' = "
                        "sustainable withdrawal rate over 100 years.")
-        st.metric("Buy burn (mo 1)", fmt(burn_buy_m1), border=True,
+        st.metric("Buy burn (mo 1)", fmtm(burn_buy_m1), border=True,
                   help="Owner's total month-1 outflow: P&I + property tax + "
                        "insurance + maintenance + HOA + PMI + extra spending. "
                        "No interest-deduction benefit (no income).")
-        st.metric("Rent burn (mo 1)", fmt(burn_rent_m1), border=True,
+        st.metric("Rent burn (mo 1)", fmtm(burn_rent_m1), border=True,
                   help="Renter's month-1 outflow: rent + extra spending.")
-        st.metric("Home equity when cash runs out", he_label, border=True,
-                  help="Net home equity (home value × (1 − selling costs) − loan "
-                       "balance) at the month the buy portfolio depletes. A "
-                       "positive number means the owner still has equity they "
-                       "could access via sale or HELOC. '—' if the portfolio "
-                       "never depletes.")
 
     # ---- Chart 1: liquid portfolio over time ----
     # Show a few years past the later depletion, or 40 years if neither depletes
@@ -832,7 +834,21 @@ with tab5:
             hovertemplate="Year %{x:.1f}<br>Rent portfolio: %{y:$,.0f}<extra></extra>",
         ))
 
-        # Mark depletion points
+        # Mark house sale point (proceeds jump)
+        if rwy.sale_month is not None and rwy.sale_month <= cutoff_m:
+            sale_idx = rwy.sale_month  # lb_v index == month index
+            sale_portfolio_val = rwy.liquid_buy[sale_idx] if sale_idx < len(rwy.liquid_buy) else 0
+            fig_rwy.add_trace(go.Scatter(
+                x=[rwy.sale_month / 12], y=[sale_portfolio_val],
+                mode="markers+text",
+                marker=dict(size=12, symbol="diamond", color="orange"),
+                text=[f"sold house<br>{fmtm(rwy.sale_proceeds)}"],
+                textposition="top center",
+                showlegend=False,
+                hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmtm(rwy.sale_proceeds)}<extra></extra>",
+            ))
+
+        # Mark final depletion points
         if buy_dep is not None and buy_dep <= cutoff_m:
             fig_rwy.add_trace(go.Scatter(
                 x=[buy_dep / 12], y=[0],
@@ -855,11 +871,16 @@ with tab5:
             ))
 
         st.plotly_chart(compact(fig_rwy, xaxis_title="Years", yaxis_title="$"))
+        sale_note = (
+            f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
+            f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
+            if rwy.sale_month is not None else ""
+        )
         st.caption(
             "Each portfolio is drawn down by its own housing costs (+ extra spending) "
             "with no income. Growth continues until the portfolio hits zero. "
             "Buy starts with less cash (down payment + closing already spent) "
-            "but may have lower ongoing costs depending on loan size."
+            "but may have lower ongoing costs depending on loan size." + sale_note
         )
 
     # ---- Chart 2: runway vs down payment % ----
@@ -879,6 +900,7 @@ with tab5:
                 a_d = replace(base_a, price=price_v, down_pct=d,
                               monthly_rent=rent_v)
                 rr = runway(a_d, extra_monthly=extra)
+                # Use TOTAL buy runway (final depletion, including post-sale rent phase)
                 buy_yrs = (rr.depleted_buy_month / 12
                            if rr.depleted_buy_month is not None else 100.0)
                 results.append((d * 100, min(buy_yrs, 100.0)))
@@ -920,10 +942,12 @@ with tab5:
                                     xaxis_title="Down payment (%)",
                                     yaxis_title="Buy runway (years)"))
             st.caption(
-                f"More down payment lowers monthly P&I but leaves less starting portfolio. "
-                f"Peak buy runway ({peak_yrs:.1f} yrs) occurs at {peak_down:.0f}% down — "
-                f"the sweet spot between burn-rate reduction and starting-cash preservation. "
-                f"Capped at 100 yrs. Dashed line = rent runway at current rent. "
+                f"Total buy runway: owner phase + post-sale renter phase (house sold when "
+                f"owner cash runs out, proceeds fund renting at then-current market rent). "
+                f"Peak buy runway ({peak_yrs:.1f} yrs) at {peak_down:.0f}% down. "
+                f"With the sale phase included, large down payments are less penalised "
+                f"because the equity is returned at sale. "
+                f"Capped at 100 yrs. Dashed line = rent runway. "
                 f"Infeasible cells (upfront > capital) are excluded."
             )
         else:

@@ -329,15 +329,38 @@ class RunwayResult:
     Both scenarios draw housing costs (plus extra_monthly living expenses)
     from their respective liquid investment portfolios until depletion.
     No fairness rule — each side is fully independent.
+
+    Buy scenario sell-and-rent phase:
+        When the buy-side liquid portfolio can no longer cover the month's
+        housing need as an owner, the house is sold.  Sale proceeds
+        (home_value × (1 − selling_cost_pct) − loan_balance) are injected
+        into the liquid portfolio and the owner becomes a renter at the
+        then-current market rent.  Home-sale capital gains are NOT modeled
+        (§121 exclusion covers a large portion; consistent with the rest of
+        the app).  The runway clock continues until this combined portfolio
+        also depletes.
+
+    sale_month: month the house was sold (None if the owner never ran out
+        of cash while owning).
+    sale_proceeds: net proceeds added to the portfolio at sale_month (None
+        if sale_month is None).
+    depleted_buy_month: FINAL depletion month (after the rent phase), or
+        None if the portfolio survives all of max_years.
+    liquid_buy: shows the jump at sale_month from the proceeds injection.
+    monthly_need_buy: switches from owner costs to (rent + extra_monthly)
+        the month after sale_month.
+    home_equity: 0 from sale_month onward.
     """
     months: list                  # 0..N month indices
-    liquid_buy: list              # buy-side portfolio value each month (0 after depletion)
+    liquid_buy: list              # buy-side portfolio value each month (0 after final depletion)
     liquid_rent: list             # rent-side portfolio value each month (0 after depletion)
     monthly_need_buy: list        # gross housing outflow for buy each month (no tax benefit)
     monthly_need_rent: list       # gross housing outflow for rent each month
-    home_equity: list             # home*(1-selling_cost_pct) - loan_balance each month
-    depleted_buy_month: int | None   # month portfolio hit zero (None = survives max_years)
+    home_equity: list             # home*(1-selling_cost_pct) - loan_balance each month; 0 after sale
+    depleted_buy_month: int | None   # FINAL month portfolio hit zero (None = survives max_years)
     depleted_rent_month: int | None  # month portfolio hit zero (None = survives max_years)
+    sale_month: int | None        # month house was sold (None = owner never ran out as owner)
+    sale_proceeds: float | None   # net proceeds injected at sale_month (None if no sale)
 
 
 def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> RunwayResult:
@@ -401,31 +424,41 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
 
     depleted_buy_month: int | None = None
     depleted_rent_month: int | None = None
+    sale_month: int | None = None
+    sale_proceeds_val: float | None = None
+    # Track whether we're in the post-sale renting phase for the buy scenario
+    sold_house: bool = False
 
     for m in range(1, n + 1):
         # ---- grow home & compute buy housing need ----
-        home *= 1 + g_home
+        if not sold_house:
+            home *= 1 + g_home
 
-        interest = bal * r_m
-        payment = min(pay, bal + interest)
-        principal = payment - interest
-        bal = max(bal - principal, 0.0)
+            interest = bal * r_m
+            payment = min(pay, bal + interest)
+            principal = payment - interest
+            bal = max(bal - principal, 0.0)
 
-        pmi = 0.0
-        if loan0 > 0 and a.down_pct < 0.20 and (bal / a.price) > 0.78:
-            pmi = bal * a.pmi_rate / 12
+            pmi = 0.0
+            if loan0 > 0 and a.down_pct < 0.20 and (bal / a.price) > 0.78:
+                pmi = bal * a.pmi_rate / 12
 
-        prop_tax = assessed * a.property_tax_rate / 12
-        insurance = home * a.insurance_rate / 12
-        maintenance = home * a.maintenance_rate / 12
+            prop_tax = assessed * a.property_tax_rate / 12
+            insurance = home * a.insurance_rate / 12
+            maintenance = home * a.maintenance_rate / 12
 
-        # No interest-deduction benefit (no income to deduct against)
-        need_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
+            # No interest-deduction benefit (no income to deduct against)
+            need_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
+        else:
+            # Post-sale: buy scenario now rents at the same rent rate the rent scenario uses
+            need_buy = rent + extra_monthly
+
         need_rent = rent + extra_monthly
 
         # Annual steps (rent, assessed value)
         if m % 12 == 0:
-            assessed *= 1 + a.prop_tax_growth
+            if not sold_house:
+                assessed *= 1 + a.prop_tax_growth
             rent *= 1 + a.rent_growth
 
         # ---- buy portfolio withdrawal ----
@@ -436,7 +469,44 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
                 sell_buy = need_buy / (1.0 - a.cap_gains_rate * gain_frac)
             else:
                 sell_buy = need_buy
-            if sell_buy >= liq_buy:
+
+            if sell_buy >= liq_buy and not sold_house:
+                # Owner's cash insufficient — sell the house and become a renter
+                leftover = max(liq_buy, 0.0)
+                proceeds = home * (1.0 - a.selling_cost_pct) - bal
+                # Edge case: proceeds may be negative (underwater), clamp to 0
+                proceeds = max(proceeds, 0.0)
+                total = leftover + proceeds
+                sale_month = m
+                sale_proceeds_val = proceeds
+                sold_house = True
+                bal = 0.0
+
+                # Post-sale need is rent (updated to current market rent)
+                need_buy = rent + extra_monthly
+
+                # Can the combined total cover this month's need as a renter?
+                if total > 0:
+                    gain_frac2 = max(0.0, 1.0 - basis_buy / total) if total > 0 else 0.0
+                    sell_buy2 = need_buy / (1.0 - a.cap_gains_rate * gain_frac2)
+                else:
+                    sell_buy2 = need_buy
+
+                if sell_buy2 >= total:
+                    # Depleted immediately (absurdly rare edge case)
+                    liq_buy = 0.0
+                    basis_buy = 0.0
+                    depleted_buy_month = m
+                else:
+                    # Inject proceeds into portfolio; sale cash is post-tax, add to basis
+                    basis_buy = basis_buy + proceeds  # leftover basis preserved + post-tax proceeds
+                    liq_buy = total
+                    # Withdraw this month's rent need
+                    basis_buy -= basis_buy * (sell_buy2 / liq_buy)
+                    liq_buy -= sell_buy2
+
+            elif sell_buy >= liq_buy and sold_house:
+                # Already a renter (post-sale phase) — final depletion
                 depleted_buy_month = m
                 liq_buy = 0.0
                 basis_buy = 0.0
@@ -465,7 +535,11 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
         lr_v.append(liq_rent)
         nb_v.append(need_buy)
         nr_v.append(need_rent)
-        he_v.append(home * (1 - a.selling_cost_pct) - bal)
+        # home_equity is 0 once the house is sold
+        if sold_house:
+            he_v.append(0.0)
+        else:
+            he_v.append(home * (1 - a.selling_cost_pct) - bal)
 
         # Stop early once both are depleted
         if depleted_buy_month is not None and depleted_rent_month is not None:
@@ -480,4 +554,6 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
         home_equity=he_v,
         depleted_buy_month=depleted_buy_month,
         depleted_rent_month=depleted_rent_month,
+        sale_month=sale_month,
+        sale_proceeds=sale_proceeds_val,
     )
