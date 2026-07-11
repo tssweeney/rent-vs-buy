@@ -598,7 +598,7 @@ with tab0:
         CMH = 115   # uniform card height across all 2×2 grids (~115 px)
         _W_CHART_H = 500   # Wealth chart height
         _CF_CHART_H = 500  # Cash flow chart height
-        _RT_CHART_H = 240  # each of the two stacked Retirement charts
+        _RT_CHART_H = 500  # Retirement chart, matching the other two columns
 
         _yrs = np.array(res.months) / 12
 
@@ -698,20 +698,6 @@ with tab0:
                     "Buy starts with less cash (down payment + closing already spent) "
                     "but may have lower ongoing costs depending on loan size." + _sale_note_ov
                 )
-            _sweep_data = _runway_sweep(base, price, rent0)
-            _fig_sweep, _peak_down, _peak_yrs = runway_sweep_fig(
-                _sweep_data, rwy.depleted_rent_month, height=_RT_CHART_H)
-            with st.container(border=True):
-                st.markdown("**Runway vs. down payment at current price**")
-                if _fig_sweep is not None:
-                    st.plotly_chart(_fig_sweep, key="ov_runway_sweep")
-                    st.caption(
-                        f"Total buy runway (owner + post-sale renter phase); peak {_peak_yrs:.1f} yrs "
-                        f"at {_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
-                        f"infeasible cells excluded."
-                    )
-                else:
-                    st.info("No feasible down payments at the current price and capital.")
 
 # ================================================================ tab 3 (Calculations)
 with tab3:
@@ -1358,3 +1344,19 @@ with tab5:
             st.markdown("**Sensitivity: buy advantage vs. investment return**")
             st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="sup_sensitivity")
             st.caption("Zero crossing = investment return at which renting starts to win.")
+
+        sup_col3, _ = st.columns(2)
+        with sup_col3.container(border=True):
+            st.markdown("**Runway vs. down payment at current price**")
+            _sup_sweep = _runway_sweep(base, price, rent0)
+            _sup_fig, _sup_peak_down, _sup_peak_yrs = runway_sweep_fig(
+                _sup_sweep, rwy.depleted_rent_month)
+            if _sup_fig is not None:
+                st.plotly_chart(_sup_fig, key="sup_runway_sweep")
+                st.caption(
+                    f"Total buy runway (owner + post-sale renter phase); peak {_sup_peak_yrs:.1f} yrs "
+                    f"at {_sup_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
+                    f"infeasible cells excluded."
+                )
+            else:
+                st.info("No feasible down payments at the current price and capital.")
