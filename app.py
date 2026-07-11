@@ -593,68 +593,22 @@ with tab0:
 
         st.divider()
 
-        # ================================================================ Overview — Wealth section
-        st.subheader("Wealth")
-
+        # ================================================================ Overview — three category columns
         _ov_upfront = down + price * closing_pct + onetime
-        SMH = 120  # supplementary metric-card height; 4 × 120 ≈ 480 px rail ≈ chart height
-        _SECTION_H = 500  # chart height for single-chart sections (Wealth, Cash flow)
+        CMH = 115   # uniform card height across all 2×2 grids (~115 px)
+        _W_CHART_H = 500   # Wealth chart height
+        _CF_CHART_H = 500  # Cash flow chart height
+        _RT_CHART_H = 240  # each of the two stacked Retirement charts
 
         _yrs = np.array(res.months) / 12
 
-        _wleft, _wright = st.columns([1, 4], gap="medium")
-        with _wleft:
-            st.metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=SMH,
-                      help="After-tax portfolio + home value net of selling costs − loan balance")
-            st.metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=SMH,
-                      help="Portfolio net of capital-gains tax if sold")
-            st.metric("Cash at closing", fmt(_ov_upfront), border=True, height=SMH,
-                      help="Down payment + closing costs + one-time costs — leaves your capital on day one")
-            st.metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=SMH,
-                      help="Capital left invested after closing — your emergency cushion in the buy scenario")
-        with _wright:
-            with st.container(border=True):
-                st.markdown("**Net worth over time**")
-                st.plotly_chart(networth_fig(res, _yrs, height=_SECTION_H), key="ov_networth")
-                st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
-                           "dotted = mark-to-market.")
-
-        st.divider()
-
-        # ================================================================ Overview — Cash flow section
-        st.subheader("Cash flow")
-
+        # Cash flow derived values (needed inside cash flow column)
         _own_cost_m1 = res.outflow_buy[1]
         _rent_m1 = res.outflow_rent[1]
         _tax_benefit_m1 = res.tax_benefit_m[1]
         _principal_m1 = res.principal_m[1]
 
-        _cfleft, _cfright = st.columns([1, 4], gap="medium")
-        with _cfleft:
-            st.metric("Own cost (mo 1, net)", fmt(_own_cost_m1), border=True, height=SMH,
-                      help="P&I + property tax + insurance + maintenance + HOA + PMI "
-                           "minus the interest-deduction benefit — your true monthly outflow in month 1.")
-            st.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=SMH,
-                      help="Month-1 rent for the comparable home. Grows at the rent-growth "
-                           "rate each year.")
-            st.metric("Interest deduction (mo 1)", fmt(_tax_benefit_m1), border=True, height=SMH,
-                      help="Marginal rate × deductible interest in month 1. Reduces the "
-                           "owner's net outflow; shrinks over time as the loan amortises.")
-            st.metric("Principal portion (mo 1)", fmt(_principal_m1), border=True, height=SMH,
-                      help="Principal repaid in month 1 — cash out of your pocket, but it "
-                           "builds equity rather than being a pure cost.")
-        with _cfright:
-            with st.container(border=True):
-                st.markdown("**Monthly owner cost breakdown**")
-                st.plotly_chart(monthly_cost_fig(res, _yrs, height=_SECTION_H), key="ov_monthly_cost")
-                st.caption("Bands stack to gross cost; the net line subtracts the interest "
-                           "deduction. Principal builds equity — cash out, but not lost.")
-
-        st.divider()
-
-        # ================================================================ Overview — Retirement section
-        st.subheader("Retirement")
-
+        # Retirement derived values
         def _runway_label(depleted_month, max_years=100):
             if depleted_month is None:
                 return f"{max_years}+ yrs"
@@ -665,24 +619,71 @@ with tab0:
         _burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
         _burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
 
-        _RETIRE_CHART_H = 240  # two charts stacked in the right column; ~240 px each
+        ov_col_w, ov_col_cf, ov_col_rt = st.columns(3, gap="medium")
 
-        _rleft, _rright = st.columns([1, 4], gap="medium")
-        with _rleft:
-            st.metric("Total buy runway", _buy_label, border=True, height=SMH,
-                      help="How long the buy scenario's combined portfolio lasts — first as an "
-                           "owner, then (after the forced sale) as a renter at then-current market "
-                           "rent. '100+ yrs' = sustainable over the full simulation horizon.")
-            st.metric("Rent runway", _rent_label, border=True, height=SMH,
-                      help="How long the renter's portfolio (all investable capital) lasts paying "
-                           "rent. '100+ yrs' = sustainable withdrawal rate over 100 years.")
-            st.metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=SMH,
-                      help="Owner's total month-1 outflow: P&I + property tax + insurance + "
-                           "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
-            st.metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=SMH,
-                      help="Renter's month-1 outflow: the rent payment.")
-        with _rright:
-            _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm, height=_RETIRE_CHART_H)
+        # ---- Wealth column ----
+        with ov_col_w:
+            st.markdown("**Wealth**")
+            st.caption("Where does my net worth end up?")
+            _w_r1c1, _w_r1c2 = st.columns(2, gap="small")
+            _w_r1c1.metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=CMH,
+                           help="After-tax portfolio + home value net of selling costs − loan balance")
+            _w_r1c2.metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=CMH,
+                           help="Portfolio net of capital-gains tax if sold")
+            _w_r2c1, _w_r2c2 = st.columns(2, gap="small")
+            _w_r2c1.metric("Cash at closing", fmt(_ov_upfront), border=True, height=CMH,
+                           help="Down payment + closing costs + one-time costs — leaves your capital on day one")
+            _w_r2c2.metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=CMH,
+                           help="Capital left invested after closing — your emergency cushion in the buy scenario")
+            with st.container(border=True):
+                st.markdown("**Net worth over time**")
+                st.plotly_chart(networth_fig(res, _yrs, height=_W_CHART_H), key="ov_networth")
+                st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
+                           "dotted = mark-to-market.")
+
+        # ---- Cash flow column ----
+        with ov_col_cf:
+            st.markdown("**Cash flow**")
+            st.caption("What does each month cost me?")
+            _cf_r1c1, _cf_r1c2 = st.columns(2, gap="small")
+            _cf_r1c1.metric("Own cost (mo 1, net)", fmt(_own_cost_m1), border=True, height=CMH,
+                            help="P&I + property tax + insurance + maintenance + HOA + PMI "
+                                 "minus the interest-deduction benefit — your true monthly outflow in month 1.")
+            _cf_r1c2.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=CMH,
+                            help="Month-1 rent for the comparable home. Grows at the rent-growth "
+                                 "rate each year.")
+            _cf_r2c1, _cf_r2c2 = st.columns(2, gap="small")
+            _cf_r2c1.metric("Interest deduction (mo 1)", fmt(_tax_benefit_m1), border=True, height=CMH,
+                            help="Marginal rate × deductible interest in month 1. Reduces the "
+                                 "owner's net outflow; shrinks over time as the loan amortises.")
+            _cf_r2c2.metric("Principal portion (mo 1)", fmt(_principal_m1), border=True, height=CMH,
+                            help="Principal repaid in month 1 — cash out of your pocket, but it "
+                                 "builds equity rather than being a pure cost.")
+            with st.container(border=True):
+                st.markdown("**Monthly owner cost breakdown**")
+                st.plotly_chart(monthly_cost_fig(res, _yrs, height=_CF_CHART_H), key="ov_monthly_cost")
+                st.caption("Bands stack to gross cost; the net line subtracts the interest "
+                           "deduction. Principal builds equity — cash out, but not lost.")
+
+        # ---- Retirement column ----
+        with ov_col_rt:
+            st.markdown("**Retirement**")
+            st.caption("How long could I survive with no income?")
+            _rt_r1c1, _rt_r1c2 = st.columns(2, gap="small")
+            _rt_r1c1.metric("Total buy runway", _buy_label, border=True, height=CMH,
+                            help="How long the buy scenario's combined portfolio lasts — first as an "
+                                 "owner, then (after the forced sale) as a renter at then-current market "
+                                 "rent. '100+ yrs' = sustainable over the full simulation horizon.")
+            _rt_r1c2.metric("Rent runway", _rent_label, border=True, height=CMH,
+                            help="How long the renter's portfolio (all investable capital) lasts paying "
+                                 "rent. '100+ yrs' = sustainable withdrawal rate over 100 years.")
+            _rt_r2c1, _rt_r2c2 = st.columns(2, gap="small")
+            _rt_r2c1.metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=CMH,
+                            help="Owner's total month-1 outflow: P&I + property tax + insurance + "
+                                 "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
+            _rt_r2c2.metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=CMH,
+                            help="Renter's month-1 outflow: the rent payment.")
+            _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm, height=_RT_CHART_H)
             with st.container(border=True):
                 st.markdown("**Liquid portfolio over time**")
                 st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
@@ -697,10 +698,9 @@ with tab0:
                     "Buy starts with less cash (down payment + closing already spent) "
                     "but may have lower ongoing costs depending on loan size." + _sale_note_ov
                 )
-
             _sweep_data = _runway_sweep(base, price, rent0)
             _fig_sweep, _peak_down, _peak_yrs = runway_sweep_fig(
-                _sweep_data, rwy.depleted_rent_month, height=_RETIRE_CHART_H)
+                _sweep_data, rwy.depleted_rent_month, height=_RT_CHART_H)
             with st.container(border=True):
                 st.markdown("**Runway vs. down payment at current price**")
                 if _fig_sweep is not None:
