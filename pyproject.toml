@@ -1,0 +1,12 @@
+[project]
+name = "mortgages"
+version = "0.1.0"
+description = "Rent vs. buy tradeoff analysis dashboard"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.37",
+    "plotly>=5.20",
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "pyarrow<25",
+]
