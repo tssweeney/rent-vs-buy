@@ -407,8 +407,8 @@ base = Assumptions(
 # ---------------------------------------------------------------- main
 st.subheader("Rent vs. Buy")
 
-tab0, tab1, tab2, tab3, tab4 = st.tabs(
-    ["Overview", "Single scenario", "Scenario Explorer", "Calculations", "Runway"])
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Overview", "Single scenario", "Scenario Explorer", "Calculations", "Runway", "Charts"])
 
 # ================================================================ tab 1
 with tab1:
@@ -609,45 +609,33 @@ with tab0:
                      help="Capital left invested after closing — your emergency cushion in the buy scenario")
 
         _yrs = np.array(res.months) / 12
-        wc1, wc2 = st.columns(2)
-        with wc1.container(border=True):
+        nw_col, cf_col = st.columns(2)
+        with nw_col.container(border=True):
             st.markdown("**Net worth over time**")
             st.plotly_chart(networth_fig(res, _yrs), key="ov_networth")
             st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
                        "dotted = mark-to-market.")
 
-        with wc2.container(border=True):
-            st.markdown("**Buy net worth composition**")
-            st.plotly_chart(networth_composition_fig(res, _yrs, selling_pct), key="ov_networth_comp")
-            st.caption("Bands sum to the buy 'if sold' line; home equity is only "
-                       "accessible by selling or borrowing.")
-
-        with st.container(border=True):
-            st.markdown("**Sensitivity: buy advantage vs. investment return**")
-            st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="ov_sensitivity")
-            st.caption("Zero crossing = investment return at which renting starts to win.")
+        with cf_col.container(border=True):
+            st.markdown("**Monthly owner cost breakdown**")
+            st.plotly_chart(monthly_cost_fig(res, _yrs), key="ov_monthly_cost_wealth")
+            st.caption("Bands stack to gross cost; the net line subtracts the interest "
+                       "deduction. Principal builds equity — cash out, but not lost.")
 
         st.divider()
 
         # ================================================================ Overview — Cash flow section
         st.subheader("Cash flow")
 
-        cf_left, cf_right = st.columns([1, 3])
-        with cf_left:
-            st.metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True, height=WMH,
-                      help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
-            st.metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
-                      delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
-                      else "buy costs less/mo",
-                      delta_color="off", border=True, height=WMH,
-                      help="Owner's net monthly cost minus rent in month 1. Whichever side is "
-                           "cheaper invests this difference every month.")
-
-        with cf_right.container(border=True):
-            st.markdown("**Monthly owner cost breakdown**")
-            st.plotly_chart(monthly_cost_fig(res, _yrs), key="ov_monthly_cost")
-            st.caption("Bands stack to gross cost; the net line subtracts the interest "
-                       "deduction. Principal builds equity — cash out, but not lost.")
+        cf_cols = st.columns(2)
+        cf_cols[0].metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True, height=WMH,
+                          help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
+        cf_cols[1].metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
+                          delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
+                          else "buy costs less/mo",
+                          delta_color="off", border=True, height=WMH,
+                          help="Owner's net monthly cost minus rent in month 1. Whichever side is "
+                               "cheaper invests this difference every month.")
 
         st.divider()
 
@@ -1340,3 +1328,24 @@ with tab2:
                 else:
                     st.warning("Every cell is either unaffordable or has no defined "
                                "value for this metric.")
+
+# ================================================================ tab 5 (Charts)
+with tab5:
+    st.caption("Supplementary views for the scenario configured in the sidebar.")
+
+    if not res.feasible:
+        st.error(f"Infeasible: upfront cash needed ({fmtm(price * down_pct + price * closing_pct + onetime)}) "
+                 f"exceeds capital ({fmtm(capital)}).")
+    else:
+        sup_col1, sup_col2 = st.columns(2)
+        with sup_col1.container(border=True):
+            st.markdown("**Buy net worth composition**")
+            st.plotly_chart(networth_composition_fig(res, _yrs, selling_pct),
+                            key="sup_networth_comp")
+            st.caption("Bands sum to the buy 'if sold' line; home equity is only "
+                       "accessible by selling or borrowing.")
+
+        with sup_col2.container(border=True):
+            st.markdown("**Sensitivity: buy advantage vs. investment return**")
+            st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="sup_sensitivity")
+            st.caption("Zero crossing = investment return at which renting starts to win.")
