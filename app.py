@@ -60,6 +60,215 @@ def compact(fig, height=340, legend=True, **layout):
     return fig
 
 
+# ---------------------------------------------------------------- chart helpers
+# Each helper builds a Plotly Figure from simulation results; callers pass a
+# unique key= to st.plotly_chart so the same figure can appear in multiple tabs
+# without triggering duplicate-element-ID errors.
+
+def networth_fig(res, yrs):
+    """Net worth over time: buy (if sold & mark-to-market) vs rent."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_buy_liq, name="Buy (if sold)",
+                             line=dict(width=3)))
+    fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_buy, name="Buy (mark-to-market)",
+                             line=dict(dash="dot")))
+    fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq, name="Rent (if sold)",
+                             line=dict(width=3)))
+    fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent, name="Rent (mark-to-market)",
+                             line=dict(dash="dot")))
+    return compact(fig, xaxis_title="Years", yaxis_title="$")
+
+
+def networth_composition_fig(res, yrs, selling_pct):
+    """Buy net worth stacked: investments + home equity vs rent line."""
+    equity_liq = [h * (1 - selling_pct) - b
+                  for h, b in zip(res.home_value, res.loan_balance)]
+    figc = go.Figure()
+    figc.add_trace(go.Scatter(x=yrs, y=res.portfolio_buy_after_tax,
+                              name="Investments (after tax)",
+                              stackgroup="buy", line=dict(width=0.5)))
+    figc.add_trace(go.Scatter(x=yrs, y=equity_liq,
+                              name="Home equity (net)",
+                              stackgroup="buy", line=dict(width=0.5)))
+    figc.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq,
+                              name="Rent (after tax)",
+                              line=dict(dash="dash", color="gray")))
+    return compact(figc, xaxis_title="Years", yaxis_title="$")
+
+
+def monthly_cost_fig(res, yrs):
+    """Stacked monthly owner cost breakdown with rent overlay."""
+    fig2 = go.Figure()
+    _x = yrs[1:]
+    _components = [
+        ("Interest",      res.interest_m[1:]),
+        ("Principal",     res.principal_m[1:]),
+        ("Property tax",  res.prop_tax_m[1:]),
+        ("Insurance",     res.insurance_m[1:]),
+        ("Maintenance",   res.maintenance_m[1:]),
+        ("HOA",           res.hoa_m[1:]),
+        ("PMI",           res.pmi_m[1:]),
+    ]
+    for _name, _series in _components:
+        if max(_series) > 0:
+            fig2.add_trace(go.Scatter(
+                x=_x, y=_series, name=_name,
+                stackgroup="own", line=dict(width=0.5),
+                hovertemplate="%{y:$,.0f}",
+            ))
+    fig2.add_trace(go.Scatter(
+        x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit)",
+        line=dict(width=2, color="black"),
+        hovertemplate="%{y:$,.0f}",
+    ))
+    fig2.add_trace(go.Scatter(
+        x=_x, y=res.outflow_rent[1:], name="Rent",
+        line=dict(width=2, dash="dash", color="gray"),
+        hovertemplate="%{y:$,.0f}",
+    ))
+    return compact(fig2, xaxis_title="Years", yaxis_title="$/mo")
+
+
+def sensitivity_fig(a, alt_return, horizon):
+    """Buy advantage vs. investment return sensitivity line."""
+    rates = np.arange(0.03, 0.111, 0.005)
+    adv = []
+    for r in rates:
+        s = simulate(replace(a, alt_return_annual=float(r)))
+        adv.append(s.net_worth_buy_liq[-1] - s.net_worth_rent_liq[-1])
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=rates * 100, y=adv, name="Buy advantage"))
+    fig3.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig3.add_vline(x=alt_return * 100, line_dash="dot", line_color="green",
+                   annotation_text="your assumption")
+    return compact(fig3, legend=False,
+                   xaxis_title="Investment return (pre-tax, %)",
+                   yaxis_title=f"Buy − rent, yr {horizon} ($)")
+
+
+def liquid_portfolio_fig(rwy, fmtm_fn):
+    """Liquid portfolio over time for the runway scenario."""
+    buy_dep = rwy.depleted_buy_month
+    rent_dep = rwy.depleted_rent_month
+    later_dep = max(
+        buy_dep if buy_dep is not None else 0,
+        rent_dep if rent_dep is not None else 0,
+    )
+    if buy_dep is None and rent_dep is None:
+        cutoff_m = 40 * 12
+    else:
+        cutoff_m = min(later_dep + 3 * 12, len(rwy.months) - 1)
+
+    plot_months = [m for m in rwy.months if m <= cutoff_m]
+    plot_yrs = [m / 12 for m in plot_months]
+    plot_buy = rwy.liquid_buy[:len(plot_months)]
+    plot_rent = rwy.liquid_rent[:len(plot_months)]
+
+    fig_rwy = go.Figure()
+    fig_rwy.add_trace(go.Scatter(
+        x=plot_yrs, y=plot_buy, name="Buy portfolio",
+        line=dict(width=3),
+        hovertemplate="Year %{x:.1f}<br>Buy portfolio: %{y:$,.0f}<extra></extra>",
+    ))
+    fig_rwy.add_trace(go.Scatter(
+        x=plot_yrs, y=plot_rent, name="Rent portfolio",
+        line=dict(width=3, dash="dash"),
+        hovertemplate="Year %{x:.1f}<br>Rent portfolio: %{y:$,.0f}<extra></extra>",
+    ))
+
+    if rwy.sale_month is not None and rwy.sale_month <= cutoff_m:
+        sale_idx = rwy.sale_month
+        sale_portfolio_val = rwy.liquid_buy[sale_idx] if sale_idx < len(rwy.liquid_buy) else 0
+        fig_rwy.add_trace(go.Scatter(
+            x=[rwy.sale_month / 12], y=[sale_portfolio_val],
+            mode="markers+text",
+            marker=dict(size=12, symbol="diamond", color="orange"),
+            text=[f"sold house<br>{fmtm_fn(rwy.sale_proceeds)}"],
+            textposition="top center",
+            showlegend=False,
+            hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmtm_fn(rwy.sale_proceeds)}<extra></extra>",
+        ))
+
+    if buy_dep is not None and buy_dep <= cutoff_m:
+        fig_rwy.add_trace(go.Scatter(
+            x=[buy_dep / 12], y=[0],
+            mode="markers+text",
+            marker=dict(size=10, symbol="x", color="blue"),
+            text=[f"Buy depleted<br>yr {buy_dep / 12:.1f}"],
+            textposition="top center",
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+    if rent_dep is not None and rent_dep <= cutoff_m:
+        fig_rwy.add_trace(go.Scatter(
+            x=[rent_dep / 12], y=[0],
+            mode="markers+text",
+            marker=dict(size=10, symbol="x", color="red"),
+            text=[f"Rent depleted<br>yr {rent_dep / 12:.1f}"],
+            textposition="top center",
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+    return compact(fig_rwy, xaxis_title="Years", yaxis_title="$"), cutoff_m
+
+
+def runway_sweep_fig(sweep_data, rent_runway_months):
+    """Runway vs down-payment sweep chart. Returns (fig, peak_down, peak_yrs) or None."""
+    valid = [(d, y) for d, y in sweep_data if y is not None]
+    if not valid:
+        return None, None, None
+    sweep_x = [d for d, _ in valid]
+    sweep_y = [y for _, y in valid]
+
+    fig_sweep = go.Figure()
+    fig_sweep.add_trace(go.Scatter(
+        x=sweep_x, y=sweep_y, mode="lines+markers",
+        line=dict(width=2),
+        hovertemplate="Down %{x:.0f}%<br>Buy runway: %{y:.1f} yrs<extra></extra>",
+        name="Buy runway",
+    ))
+    fig_sweep.add_hline(y=rent_runway_months / 12
+                        if rent_runway_months is not None else 100.0,
+                        line_dash="dash", line_color="gray",
+                        annotation_text="Rent runway",
+                        annotation_position="right")
+
+    peak_idx = int(max(range(len(sweep_y)), key=lambda i: sweep_y[i]))
+    peak_down = sweep_x[peak_idx]
+    peak_yrs = sweep_y[peak_idx]
+    fig_sweep.add_trace(go.Scatter(
+        x=[peak_down], y=[peak_yrs],
+        mode="markers",
+        marker=dict(size=12, symbol="star", color="gold"),
+        name=f"Peak: {peak_down:.0f}% down → {peak_yrs:.1f} yrs",
+        hovertemplate=f"Peak runway: {peak_yrs:.1f} yrs at {peak_down:.0f}% down<extra></extra>",
+    ))
+
+    return compact(fig_sweep, height=320,
+                   xaxis_title="Down payment (%)",
+                   yaxis_title="Buy runway (years)"), peak_down, peak_yrs
+
+
+# ---------------------------------------------------------------- cached runway sweep (module scope)
+@st.cache_data(show_spinner="Computing runway sweep...")
+def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
+    downs_sweep = [d / 100 for d in range(0, 101, 5)]
+    results = []
+    for d in downs_sweep:
+        upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
+        if upfront_d > base_a.capital:
+            results.append((d * 100, None))
+            continue
+        a_d = replace(base_a, price=price_v, down_pct=d,
+                      monthly_rent=rent_v)
+        rr = runway(a_d)
+        buy_yrs = (rr.depleted_buy_month / 12
+                   if rr.depleted_buy_month is not None else 100.0)
+        results.append((d * 100, min(buy_yrs, 100.0)))
+    return results
+
+
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("Assumptions")
 
@@ -256,89 +465,26 @@ with tab1:
         r1c1, r1c2 = st.columns(2)
         with r1c1.container(border=True):
             st.markdown("**Net worth over time**")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_buy_liq, name="Buy (if sold)",
-                                     line=dict(width=3)))
-            fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_buy, name="Buy (mark-to-market)",
-                                     line=dict(dash="dot")))
-            fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq, name="Rent (if sold)",
-                                     line=dict(width=3)))
-            fig.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent, name="Rent (mark-to-market)",
-                                     line=dict(dash="dot")))
-            st.plotly_chart(compact(fig, xaxis_title="Years", yaxis_title="$"))
+            st.plotly_chart(networth_fig(res, yrs), key="ss_networth")
             st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
                        "dotted = mark-to-market.")
 
         with r1c2.container(border=True):
             st.markdown("**Buy net worth composition**")
-            equity_liq = [h * (1 - selling_pct) - b
-                          for h, b in zip(res.home_value, res.loan_balance)]
-            figc = go.Figure()
-            figc.add_trace(go.Scatter(x=yrs, y=res.portfolio_buy_after_tax,
-                                      name="Investments (after tax)",
-                                      stackgroup="buy", line=dict(width=0.5)))
-            figc.add_trace(go.Scatter(x=yrs, y=equity_liq,
-                                      name="Home equity (net)",
-                                      stackgroup="buy", line=dict(width=0.5)))
-            figc.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq,
-                                      name="Rent (after tax)",
-                                      line=dict(dash="dash", color="gray")))
-            st.plotly_chart(compact(figc, xaxis_title="Years", yaxis_title="$"))
+            st.plotly_chart(networth_composition_fig(res, yrs, selling_pct), key="ss_networth_comp")
             st.caption("Bands sum to the buy 'if sold' line; home equity is only "
                        "accessible by selling or borrowing.")
 
         r2c1, r2c2 = st.columns(2)
         with r2c1.container(border=True):
             st.markdown("**Monthly owner cost breakdown**")
-            fig2 = go.Figure()
-            # Stacked area traces — skip any series that is all zeros
-            _x = yrs[1:]
-            _components = [
-                ("Interest",      res.interest_m[1:]),
-                ("Principal",     res.principal_m[1:]),
-                ("Property tax",  res.prop_tax_m[1:]),
-                ("Insurance",     res.insurance_m[1:]),
-                ("Maintenance",   res.maintenance_m[1:]),
-                ("HOA",           res.hoa_m[1:]),
-                ("PMI",           res.pmi_m[1:]),
-            ]
-            for _name, _series in _components:
-                if max(_series) > 0:
-                    fig2.add_trace(go.Scatter(
-                        x=_x, y=_series, name=_name,
-                        stackgroup="own", line=dict(width=0.5),
-                        hovertemplate="%{y:$,.0f}",
-                    ))
-            # Overlay lines (not stacked)
-            fig2.add_trace(go.Scatter(
-                x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit)",
-                line=dict(width=2, color="black"),
-                hovertemplate="%{y:$,.0f}",
-            ))
-            fig2.add_trace(go.Scatter(
-                x=_x, y=res.outflow_rent[1:], name="Rent",
-                line=dict(width=2, dash="dash", color="gray"),
-                hovertemplate="%{y:$,.0f}",
-            ))
-            st.plotly_chart(compact(fig2, xaxis_title="Years", yaxis_title="$/mo"))
+            st.plotly_chart(monthly_cost_fig(res, yrs), key="ss_monthly_cost")
             st.caption("Bands stack to gross cost; the net line subtracts the interest "
                        "deduction. Principal builds equity — cash out, but not lost.")
 
         with r2c2.container(border=True):
             st.markdown("**Sensitivity: buy advantage vs. investment return**")
-            rates = np.arange(0.03, 0.111, 0.005)
-            adv = []
-            for r in rates:
-                s = simulate(replace(a, alt_return_annual=float(r)))
-                adv.append(s.net_worth_buy_liq[-1] - s.net_worth_rent_liq[-1])
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=rates * 100, y=adv, name="Buy advantage"))
-            fig3.add_hline(y=0, line_dash="dash", line_color="gray")
-            fig3.add_vline(x=alt_return * 100, line_dash="dot", line_color="green",
-                           annotation_text="your assumption")
-            st.plotly_chart(compact(fig3, legend=False,
-                                    xaxis_title="Investment return (pre-tax, %)",
-                                    yaxis_title=f"Buy − rent, yr {horizon} ($)"))
+            st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="ss_sensitivity")
             st.caption("Zero crossing = investment return at which renting starts to win.")
 
 # ================================================================ Hoist runway computation
@@ -352,6 +498,7 @@ with tab0:
         st.error(f"Infeasible: upfront cash needed ({fmtm(price * down_pct + price * closing_pct + onetime)}) "
                  f"exceeds capital ({fmtm(capital)}).")
     else:
+        # ---- Hero grid: 3-category summary (Wealth / Cash flow / Retirement) ----
         # --- Metric 1: Buy advantage ---
         _nw_buy = res.net_worth_buy_liq[-1]
         _nw_rent = res.net_worth_rent_liq[-1]
@@ -444,7 +591,130 @@ with tab0:
                            "(1,200 months) for this arithmetic — if both are sustainable "
                            "the card shows '—'.")
 
-        st.caption("For full charts and month-by-month detail see the Single scenario, Scenario Explorer, and Calculations tabs.")
+        st.divider()
+
+        # ================================================================ Overview — Wealth section
+        st.subheader("Wealth")
+
+        _ov_upfront = down + price * closing_pct + onetime
+        WMH = 150
+        wc = st.columns(4)
+        wc[0].metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=WMH,
+                     help="After-tax portfolio + home value net of selling costs − loan balance")
+        wc[1].metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=WMH,
+                     help="Portfolio net of capital-gains tax if sold")
+        wc[2].metric("Cash at closing", fmt(_ov_upfront), border=True, height=WMH,
+                     help="Down payment + closing costs + one-time costs — leaves your capital on day one")
+        wc[3].metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=WMH,
+                     help="Capital left invested after closing — your emergency cushion in the buy scenario")
+
+        _yrs = np.array(res.months) / 12
+        wc1, wc2 = st.columns(2)
+        with wc1.container(border=True):
+            st.markdown("**Net worth over time**")
+            st.plotly_chart(networth_fig(res, _yrs), key="ov_networth")
+            st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
+                       "dotted = mark-to-market.")
+
+        with wc2.container(border=True):
+            st.markdown("**Buy net worth composition**")
+            st.plotly_chart(networth_composition_fig(res, _yrs, selling_pct), key="ov_networth_comp")
+            st.caption("Bands sum to the buy 'if sold' line; home equity is only "
+                       "accessible by selling or borrowing.")
+
+        with st.container(border=True):
+            st.markdown("**Sensitivity: buy advantage vs. investment return**")
+            st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="ov_sensitivity")
+            st.caption("Zero crossing = investment return at which renting starts to win.")
+
+        st.divider()
+
+        # ================================================================ Overview — Cash flow section
+        st.subheader("Cash flow")
+
+        cf_left, cf_right = st.columns([1, 3])
+        with cf_left:
+            st.metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True, height=WMH,
+                      help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
+            st.metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
+                      delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
+                      else "buy costs less/mo",
+                      delta_color="off", border=True, height=WMH,
+                      help="Owner's net monthly cost minus rent in month 1. Whichever side is "
+                           "cheaper invests this difference every month.")
+
+        with cf_right.container(border=True):
+            st.markdown("**Monthly owner cost breakdown**")
+            st.plotly_chart(monthly_cost_fig(res, _yrs), key="ov_monthly_cost")
+            st.caption("Bands stack to gross cost; the net line subtracts the interest "
+                       "deduction. Principal builds equity — cash out, but not lost.")
+
+        st.divider()
+
+        # ================================================================ Overview — Retirement section
+        st.subheader("Retirement")
+
+        def _runway_label(depleted_month, max_years=100):
+            if depleted_month is None:
+                return f"{max_years}+ yrs"
+            return f"{depleted_month / 12:.1f} yrs"
+
+        _buy_label = _runway_label(rwy.depleted_buy_month)
+        _rent_label = _runway_label(rwy.depleted_rent_month)
+        _sale_proc_label = fmtm(rwy.sale_proceeds) if rwy.sale_proceeds is not None else "—"
+        _burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
+        _burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
+
+        RMH = 130
+        rc = st.columns(5)
+        rc[0].metric("Sale proceeds", _sale_proc_label, border=True, height=RMH,
+                     help="Net cash from the forced sale: home value × (1 − selling costs) "
+                          "− remaining loan balance. Injected into the liquid portfolio to fund "
+                          "renting. Home-sale capital gains are not modeled (§121 simplification).")
+        rc[1].metric("Total buy runway", _buy_label, border=True, height=RMH,
+                     help="How long the buy scenario's combined portfolio lasts — first as an "
+                          "owner, then (after the forced sale) as a renter at then-current market "
+                          "rent. '100+ yrs' = sustainable over the full simulation horizon.")
+        rc[2].metric("Rent runway", _rent_label, border=True, height=RMH,
+                     help="How long the renter's portfolio (all investable capital) lasts paying "
+                          "rent. '100+ yrs' = sustainable withdrawal rate over 100 years.")
+        rc[3].metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=RMH,
+                     help="Owner's total month-1 outflow: P&I + property tax + insurance + "
+                          "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
+        rc[4].metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=RMH,
+                     help="Renter's month-1 outflow: the rent payment.")
+
+        rc1, rc2 = st.columns(2)
+        _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm)
+        with rc1.container(border=True):
+            st.markdown("**Liquid portfolio over time**")
+            st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
+            _sale_note_ov = (
+                f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
+                f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
+                if rwy.sale_month is not None else ""
+            )
+            st.caption(
+                "Each portfolio is drawn down by its own housing costs with no income. "
+                "Growth continues until the portfolio hits zero. "
+                "Buy starts with less cash (down payment + closing already spent) "
+                "but may have lower ongoing costs depending on loan size." + _sale_note_ov
+            )
+
+        _sweep_data = _runway_sweep(base, price, rent0)
+        _fig_sweep, _peak_down, _peak_yrs = runway_sweep_fig(
+            _sweep_data, rwy.depleted_rent_month)
+        with rc2.container(border=True):
+            st.markdown("**Runway vs. down payment at current price**")
+            if _fig_sweep is not None:
+                st.plotly_chart(_fig_sweep, key="ov_runway_sweep")
+                st.caption(
+                    f"Total buy runway (owner + post-sale renter phase); peak {_peak_yrs:.1f} yrs "
+                    f"at {_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
+                    f"infeasible cells excluded."
+                )
+            else:
+                st.info("No feasible down payments at the current price and capital.")
 
 # ================================================================ tab 3 (Calculations)
 with tab3:
@@ -771,74 +1041,10 @@ with tab4:
                  help="Renter's month-1 outflow: the rent payment.")
 
     # ---- Chart 1: liquid portfolio over time ----
-    # Show a few years past the later depletion, or 40 years if neither depletes
-    buy_dep = rwy.depleted_buy_month
-    rent_dep = rwy.depleted_rent_month
-    later_dep = max(
-        buy_dep if buy_dep is not None else 0,
-        rent_dep if rent_dep is not None else 0,
-    )
-    if buy_dep is None and rent_dep is None:
-        cutoff_m = 40 * 12
-    else:
-        cutoff_m = min(later_dep + 3 * 12, len(rwy.months) - 1)
-
-    plot_months = [m for m in rwy.months if m <= cutoff_m]
-    plot_yrs = [m / 12 for m in plot_months]
-    plot_buy = rwy.liquid_buy[:len(plot_months)]
-    plot_rent = rwy.liquid_rent[:len(plot_months)]
-
+    _fig_rwy_tab, _cutoff_m_tab = liquid_portfolio_fig(rwy, fmtm)
     with st.container(border=True):
         st.markdown("**Liquid portfolio over time**")
-        fig_rwy = go.Figure()
-        fig_rwy.add_trace(go.Scatter(
-            x=plot_yrs, y=plot_buy, name="Buy portfolio",
-            line=dict(width=3),
-            hovertemplate="Year %{x:.1f}<br>Buy portfolio: %{y:$,.0f}<extra></extra>",
-        ))
-        fig_rwy.add_trace(go.Scatter(
-            x=plot_yrs, y=plot_rent, name="Rent portfolio",
-            line=dict(width=3, dash="dash"),
-            hovertemplate="Year %{x:.1f}<br>Rent portfolio: %{y:$,.0f}<extra></extra>",
-        ))
-
-        # Mark house sale point (proceeds jump)
-        if rwy.sale_month is not None and rwy.sale_month <= cutoff_m:
-            sale_idx = rwy.sale_month  # lb_v index == month index
-            sale_portfolio_val = rwy.liquid_buy[sale_idx] if sale_idx < len(rwy.liquid_buy) else 0
-            fig_rwy.add_trace(go.Scatter(
-                x=[rwy.sale_month / 12], y=[sale_portfolio_val],
-                mode="markers+text",
-                marker=dict(size=12, symbol="diamond", color="orange"),
-                text=[f"sold house<br>{fmtm(rwy.sale_proceeds)}"],
-                textposition="top center",
-                showlegend=False,
-                hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmtm(rwy.sale_proceeds)}<extra></extra>",
-            ))
-
-        # Mark final depletion points
-        if buy_dep is not None and buy_dep <= cutoff_m:
-            fig_rwy.add_trace(go.Scatter(
-                x=[buy_dep / 12], y=[0],
-                mode="markers+text",
-                marker=dict(size=10, symbol="x", color="blue"),
-                text=[f"Buy depleted<br>yr {buy_dep / 12:.1f}"],
-                textposition="top center",
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-        if rent_dep is not None and rent_dep <= cutoff_m:
-            fig_rwy.add_trace(go.Scatter(
-                x=[rent_dep / 12], y=[0],
-                mode="markers+text",
-                marker=dict(size=10, symbol="x", color="red"),
-                text=[f"Rent depleted<br>yr {rent_dep / 12:.1f}"],
-                textposition="top center",
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-
-        st.plotly_chart(compact(fig_rwy, xaxis_title="Years", yaxis_title="$"))
+        st.plotly_chart(_fig_rwy_tab, key="rwy_liquid_portfolio")
         sale_note = (
             f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
             f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
@@ -855,63 +1061,17 @@ with tab4:
     with st.container(border=True):
         st.markdown("**Runway vs. down payment at current price**")
 
-        @st.cache_data(show_spinner="Computing runway sweep...")
-        def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
-            downs_sweep = [d / 100 for d in range(0, 101, 5)]
-            results = []
-            for d in downs_sweep:
-                upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
-                if upfront_d > base_a.capital:
-                    results.append((d * 100, None))
-                    continue
-                a_d = replace(base_a, price=price_v, down_pct=d,
-                              monthly_rent=rent_v)
-                rr = runway(a_d)
-                # Use TOTAL buy runway (final depletion, including post-sale rent phase)
-                buy_yrs = (rr.depleted_buy_month / 12
-                           if rr.depleted_buy_month is not None else 100.0)
-                results.append((d * 100, min(buy_yrs, 100.0)))
-            return results
-
         sweep_data = _runway_sweep(base, price, rent0)
         valid = [(d, y) for d, y in sweep_data if y is not None]
 
         if valid:
-            sweep_x = [d for d, _ in valid]
-            sweep_y = [y for _, y in valid]
-
-            fig_sweep = go.Figure()
-            fig_sweep.add_trace(go.Scatter(
-                x=sweep_x, y=sweep_y, mode="lines+markers",
-                line=dict(width=2),
-                hovertemplate="Down %{x:.0f}%<br>Buy runway: %{y:.1f} yrs<extra></extra>",
-                name="Buy runway",
-            ))
-            fig_sweep.add_hline(y=rwy.depleted_rent_month / 12
-                                if rwy.depleted_rent_month is not None else 100.0,
-                                line_dash="dash", line_color="gray",
-                                annotation_text="Rent runway",
-                                annotation_position="right")
-
-            # Find peak
-            peak_idx = int(max(range(len(sweep_y)), key=lambda i: sweep_y[i]))
-            peak_down = sweep_x[peak_idx]
-            peak_yrs = sweep_y[peak_idx]
-            fig_sweep.add_trace(go.Scatter(
-                x=[peak_down], y=[peak_yrs],
-                mode="markers",
-                marker=dict(size=12, symbol="star", color="gold"),
-                name=f"Peak: {peak_down:.0f}% down → {peak_yrs:.1f} yrs",
-                hovertemplate=f"Peak runway: {peak_yrs:.1f} yrs at {peak_down:.0f}% down<extra></extra>",
-            ))
-
-            st.plotly_chart(compact(fig_sweep, height=320,
-                                    xaxis_title="Down payment (%)",
-                                    yaxis_title="Buy runway (years)"))
+            _fig_sweep_tab, _peak_down_tab, _peak_yrs_tab = runway_sweep_fig(
+                sweep_data, rwy.depleted_rent_month)
+            st.plotly_chart(_fig_sweep_tab, key="rwy_runway_sweep")
             st.caption(
                 f"Total buy runway: owner phase + post-sale renter phase (house sold when "
                 f"owner cash runs out, proceeds fund renting at then-current market rent). "
-                f"Peak buy runway ({peak_yrs:.1f} yrs) at {peak_down:.0f}% down. "
+                f"Peak buy runway ({_peak_yrs_tab:.1f} yrs) at {_peak_down_tab:.0f}% down. "
                 f"With the sale phase included, large down payments are less penalised "
                 f"because the equity is returned at sale. "
                 f"Capped at 100 yrs. Dashed line = rent runway. "
