@@ -279,47 +279,9 @@ def simulate(a: Assumptions) -> Result:
     )
 
 
-def advantage_at_horizon(a: Assumptions) -> float:
-    """Buy-minus-rent net worth (liquidation basis) at the horizon."""
-    r = simulate(a)
-    return r.net_worth_buy_liq[-1] - r.net_worth_rent_liq[-1]
-
-
 def rent_from_price(price: float, price_to_rent: float) -> float:
     """Monthly rent for a comparable home given an annual price-to-rent ratio."""
     return price / price_to_rent / 12
-
-
-def sweep(base: Assumptions, prices, down_pcts, price_to_rent: float):
-    """Grid of (price, down%) -> dict with advantage and feasibility info.
-
-    Rent scales with price via the price-to-rent ratio so each cell compares
-    buying a home to renting the comparable home.
-    """
-    grid = []
-    for p in prices:
-        row = []
-        for d in down_pcts:
-            a = replace(
-                base,
-                price=p,
-                down_pct=d,
-                monthly_rent=rent_from_price(p, price_to_rent),
-            )
-            upfront = p * d + p * a.closing_buy_pct + a.other_onetime_costs
-            if upfront > a.capital:
-                row.append({"advantage": math.nan, "feasible": False,
-                            "reserve": a.capital - upfront, "max_outflow": math.nan})
-            else:
-                res = simulate(a)
-                row.append({
-                    "advantage": res.net_worth_buy_liq[-1] - res.net_worth_rent_liq[-1],
-                    "feasible": True,
-                    "reserve": a.capital - upfront,
-                    "max_outflow": max(res.outflow_buy[1:13]) if len(res.outflow_buy) > 1 else 0.0,
-                })
-        grid.append(row)
-    return grid
 
 
 @dataclass

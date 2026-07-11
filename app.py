@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import Assumptions, simulate, sweep, rent_from_price, runway, RunwayResult
+from model import Assumptions, simulate, rent_from_price, runway, RunwayResult
 
 st.set_page_config(page_title="Rent vs. Buy", page_icon=":material/home_work:",
                    layout="wide")
@@ -29,11 +29,9 @@ DEFAULTS = {
     "p2r": 28.0,
     # single-scenario tab
     "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 4_167,
-    # sweep tab constraints
-    "min_reserve": 300_000, "max_monthly": 0, "pmax": 1_500_000,
     # runway tab
     "extra_spend": 0,
-    # custom sweep tab
+    # scenario explorer tab
     "sweep_x": "price", "sweep_y": "down_pct",
 }
 for _k, _v in DEFAULTS.items():
@@ -190,9 +188,8 @@ base = Assumptions(
 # ---------------------------------------------------------------- main
 st.title("Rent vs. Buy")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["Single scenario", "Price × down payment sweep", "Details", "Methodology", "Runway",
-     "Custom sweep"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Single scenario", "Scenario Explorer", "Details", "Methodology", "Runway"])
 
 # ================================================================ tab 1
 with tab1:
@@ -347,125 +344,7 @@ with tab1:
                                     yaxis_title=f"Buy − rent, yr {horizon} ($)"))
             st.caption("Zero crossing = investment return at which renting starts to win.")
 
-# ================================================================ tab 2
-with tab2:
-    st.caption("Each cell: buy − rent net worth at the horizon, renting the comparable "
-               "home (rent = price ÷ price-to-rent ratio ÷ 12). Blank cells need more "
-               "cash at closing than you have.")
-    cc1, cc2, cc3 = st.columns(3)
-    min_reserve = cc1.number_input("Min reserve after closing ($)",
-                                   0, 2_000_000, step=25_000, key="min_reserve",
-                                   help="Cells leaving less cash than this after down "
-                                        "payment + closing are excluded from the "
-                                        "recommendation (still shown on the heatmap).")
-    max_monthly = cc2.number_input("Max monthly cost ($, 0 = no limit)",
-                                   0, 50_000, step=500, key="max_monthly",
-                                   help="Excludes cells whose first-year net monthly owner "
-                                        "cost exceeds this comfort ceiling.")
-    pmax = cc3.number_input("Max price to explore ($)", 500_000, 5_000_000,
-                            step=50_000, key="pmax",
-                            help="Top of the price range swept on the heatmap (bottom is "
-                                 "$800k, in $50k steps).")
-
-    prices = np.arange(800_000, pmax + 1, 50_000)
-    if prices.size == 0:  # pmax below the sweep floor
-        prices = np.array([int(pmax)])
-    downs = np.arange(0.10, 1.001, 0.05)
-
-    @st.cache_data(show_spinner="Running sweep...")
-    def run_sweep(base_a: Assumptions, prices_t, downs_t, ratio):
-        return sweep(base_a, list(prices_t), list(downs_t), ratio)
-
-    grid = run_sweep(base, tuple(prices), tuple(downs), p2r)
-
-    z = np.array([[c["advantage"] for c in row] for row in grid])
-    reserve = np.array([[c["reserve"] for c in row] for row in grid])
-    mout = np.array([[c["max_outflow"] for c in row] for row in grid])
-
-    ok = ~np.isnan(z) & (reserve >= min_reserve)
-    if max_monthly > 0:
-        ok &= mout <= max_monthly
-
-    left, right = st.columns([3, 2])
-
-    with left.container(border=True):
-        st.markdown(f"**Buy advantage vs. renting comparable home, year {horizon}**")
-        fig = go.Figure(go.Heatmap(
-            z=z, x=[f"{d:.0%}" for d in downs], y=[f"${p/1e6:.2f}M" for p in prices],
-            colorscale="RdBu", zmid=0,
-            colorbar=dict(title=dict(text="Buy − rent ($)", font=dict(size=11)),
-                          thickness=12),
-            hovertemplate="Price %{y}, down %{x}<br>Advantage: %{z:$,.0f}<extra></extra>",
-        ))
-        fig.update_layout(height=480, margin=dict(l=70, r=20, t=10, b=40),
-                          xaxis_title="Down payment", yaxis_title="Purchase price")
-        st.plotly_chart(fig)
-
-    with right:
-        if ok.any():
-            masked = np.where(ok, z, -np.inf)
-            i, j = np.unravel_index(np.argmax(masked), masked.shape)
-            best_p, best_d = prices[i], downs[j]
-            st.success(
-                f"Best cell under constraints: {fmtm(best_p)} at {best_d:.0%} down "
-                f"({fmtm(best_p * best_d)}) → {fmtm(z[i, j])} advantage over renting at "
-                f"year {horizon}. Reserve after closing {fmtm(reserve[i, j])}; first-year "
-                f"net monthly ≈ {fmtm(mout[i, j])}.",
-                icon=":material/check_circle:",
-            )
-            # best down per price
-            rows = []
-            for ii, p in enumerate(prices):
-                row_ok = ok[ii]
-                if row_ok.any():
-                    jj = int(np.nanargmax(np.where(row_ok, z[ii], -np.inf)))
-                    rows.append({"Price": fmt(p), "Best down %": f"{downs[jj]:.0%}",
-                                 "Down $": fmt(p * downs[jj]),
-                                 "Advantage vs rent": fmt(z[ii, jj]),
-                                 "Reserve": fmt(reserve[ii, jj]),
-                                 "Net monthly (yr 1)": fmt(mout[ii, jj])})
-            with st.container(border=True):
-                st.markdown("**Best down payment per price**")
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    hide_index=True,
-                    height=390,
-                    column_config={
-                        "Price": st.column_config.TextColumn(
-                            help="Purchase price for this row"),
-                        "Best down %": st.column_config.TextColumn(
-                            help="Down payment maximizing the buy advantage at this price, "
-                                 "under your constraints"),
-                        "Down $": st.column_config.TextColumn(
-                            help="That down payment in dollars"),
-                        "Advantage vs rent": st.column_config.TextColumn(
-                            help="Buy minus rent net worth at the horizon, after taxes and "
-                                 "selling costs"),
-                        "Reserve": st.column_config.TextColumn(
-                            help="Liquid cash left after closing"),
-                        "Net monthly (yr 1)": st.column_config.TextColumn(
-                            help="First-year net monthly owner cost"),
-                    },
-                )
-        else:
-            st.warning("No (price, down) combination satisfies your constraints.")
-
-    with left.container(border=True):
-        st.markdown("**Slice: advantage vs. down payment at a fixed price**")
-        sp = st.select_slider("Price", options=[int(p) for p in prices], value=1_400_000
-                              if 1_400_000 in prices else int(prices[len(prices)//2]),
-                              format_func=fmt,
-                              help="Pick a price to see how the advantage changes with "
-                                   "down payment alone.")
-        ii = int(np.where(prices == sp)[0][0])
-        figs = go.Figure()
-        figs.add_trace(go.Scatter(x=downs * 100, y=z[ii], mode="lines+markers"))
-        figs.add_hline(y=0, line_dash="dash", line_color="gray")
-        st.plotly_chart(compact(figs, height=300, legend=False,
-                                xaxis_title="Down payment (%)",
-                                yaxis_title=f"Buy − rent, yr {horizon} ($)"))
-
-# ================================================================ tab 3
+# ================================================================ tab 3 (Details)
 with tab3:
     st.caption("Month-by-month trace of the Single scenario inputs — one row per period, "
                "like a spreadsheet.")
@@ -605,7 +484,7 @@ with tab3:
   after-tax "if sold" basis.
 """)
 
-# ================================================================ tab 4
+# ================================================================ tab 4 (Methodology)
 with tab4:
     st.caption("Every figure is produced by a month-by-month simulation of the formulas "
                "below; the worked example evaluates them at your current inputs and "
@@ -731,7 +610,7 @@ with tab4:
 - All figures are **nominal** dollars.
 """)
 
-# ================================================================ tab 5 — Runway
+# ================================================================ tab 5 (Runway)
 with tab5:
     st.caption(
         "Assumes you retire today with no income and pay all housing costs "
@@ -952,7 +831,7 @@ with tab5:
         else:
             st.info("No feasible down payments at the current price and capital.")
 
-# ================================================================ tab 6 — Custom sweep
+# ================================================================ tab 2 (Scenario Explorer)
 # ---- registries: sweepable inputs and output metrics -------------
 
 
@@ -1055,7 +934,7 @@ def _fmt_runway(v):
     return "100+ yrs" if v >= 100 else f"{v:.1f} yrs"
 
 
-# Fixed set of 4 metrics shown in the Custom sweep tab, in display order.
+# Fixed set of 4 metrics shown in the Scenario Explorer tab, in display order.
 # Each entry: (key, label, direction, fmt_fn, hoverfmt, colorscale, zmid)
 FIXED_METRICS = [
     ("buy_adv",     "Buy advantage ($, maximize)",         "max", fmt,        "$,.0f", "RdBu",    0.0),
@@ -1071,7 +950,7 @@ def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, extra):
     """Assumptions for one grid cell: the sidebar base with the two swept fields
     overridden. If price or the price-to-rent ratio is swept, the cell's rent is
     re-derived as price ÷ ratio ÷ 12 (same convention as the price × down payment
-    sweep tab); otherwise the tab-1 rent is kept."""
+    scenario explorer tab); otherwise the tab-1 rent is kept."""
     overrides = {}
     price_v, ratio_v, derive = base_a.price, ratio, False
     extra_m = float(extra)
@@ -1130,7 +1009,7 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
     return grids
 
 
-with tab6:
+with tab2:
     st.caption("Ranges are automatic — full natural range for bounded inputs, 2× the "
                "current value for open-ended dollar inputs. Rent scales with price via "
                "the price-to-rent ratio; blank cells are unaffordable.")
