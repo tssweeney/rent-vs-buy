@@ -146,7 +146,7 @@ def sensitivity_fig(a, alt_return, horizon):
                    yaxis_title=f"Buy − rent, yr {horizon} ($)")
 
 
-def liquid_portfolio_fig(rwy, fmtm_fn, height=340):
+def liquid_portfolio_fig(rwy, fmt_fn, height=340):
     """Liquid portfolio over time for the runway scenario."""
     buy_dep = rwy.depleted_buy_month
     rent_dep = rwy.depleted_rent_month
@@ -183,10 +183,10 @@ def liquid_portfolio_fig(rwy, fmtm_fn, height=340):
             x=[rwy.sale_month / 12], y=[sale_portfolio_val],
             mode="markers+text",
             marker=dict(size=12, symbol="diamond", color="orange"),
-            text=[f"sold house<br>{fmtm_fn(rwy.sale_proceeds)}"],
+            text=[f"sold house<br>{fmt_fn(rwy.sale_proceeds)}"],
             textposition="top center",
             showlegend=False,
-            hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmtm_fn(rwy.sale_proceeds)}<extra></extra>",
+            hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmt_fn(rwy.sale_proceeds)}<extra></extra>",
         ))
 
     if buy_dep is not None and buy_dep <= cutoff_m:
@@ -638,8 +638,9 @@ with tab0:
             with st.container(border=True):
                 st.markdown("**Net worth over time**")
                 st.plotly_chart(networth_fig(res, _yrs, height=_W_CHART_H), key="ov_networth")
-                st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
-                           "dotted = mark-to-market.")
+                with st.expander("About this chart"):
+                    st.markdown("Solid = if sold today (after selling costs and cap-gains "
+                                "tax); dotted = mark-to-market.")
 
         # ---- Cash flow column ----
         with ov_col_cf:
@@ -662,8 +663,10 @@ with tab0:
             with st.container(border=True):
                 st.markdown("**Monthly owner cost breakdown**")
                 st.plotly_chart(monthly_cost_fig(res, _yrs, height=_CF_CHART_H), key="ov_monthly_cost")
-                st.caption("Bands stack to gross cost; the net line subtracts the interest "
-                           "deduction. Principal builds equity — cash out, but not lost.")
+                with st.expander("About this chart"):
+                    st.markdown("Bands stack to gross cost; the net line subtracts the "
+                                "interest deduction. Principal builds equity — cash out, "
+                                "but not lost.")
 
         # ---- Retirement column ----
         with ov_col_rt:
@@ -683,7 +686,7 @@ with tab0:
                                  "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
             _rt_r2c2.metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=CMH,
                             help="Renter's month-1 outflow: the rent payment.")
-            _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmtm, height=_RT_CHART_H)
+            _fig_rwy, _cutoff_m = liquid_portfolio_fig(rwy, fmt, height=_RT_CHART_H)
             with st.container(border=True):
                 st.markdown("**Liquid portfolio over time**")
                 st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
@@ -692,12 +695,14 @@ with tab0:
                     f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
                     if rwy.sale_month is not None else ""
                 )
-                st.caption(
-                    "Each portfolio is drawn down by its own housing costs with no income. "
-                    "Growth continues until the portfolio hits zero. "
-                    "Buy starts with less cash (down payment + closing already spent) "
-                    "but may have lower ongoing costs depending on loan size." + _sale_note_ov
-                )
+                with st.expander("About this chart"):
+                    st.markdown(
+                        "Each portfolio is drawn down by its own housing costs with no "
+                        "income. Growth continues until the portfolio hits zero. "
+                        "Buy starts with less cash (down payment + closing already spent) "
+                        "but may have lower ongoing costs depending on loan size."
+                        + _sale_note_ov
+                    )
 
 # ================================================================ tab 3 (Calculations)
 with tab3:
@@ -1024,7 +1029,7 @@ with tab4:
                  help="Renter's month-1 outflow: the rent payment.")
 
     # ---- Chart 1: liquid portfolio over time ----
-    _fig_rwy_tab, _cutoff_m_tab = liquid_portfolio_fig(rwy, fmtm)
+    _fig_rwy_tab, _cutoff_m_tab = liquid_portfolio_fig(rwy, fmt)
     with st.container(border=True):
         st.markdown("**Liquid portfolio over time**")
         st.plotly_chart(_fig_rwy_tab, key="rwy_liquid_portfolio")
