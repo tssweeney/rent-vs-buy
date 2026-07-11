@@ -198,8 +198,8 @@ base = Assumptions(
 # ---------------------------------------------------------------- main
 st.subheader("Rent vs. Buy")
 
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Overview", "Single scenario", "Scenario Explorer", "Details", "Methodology", "Runway"])
+tab0, tab1, tab2, tab3, tab4 = st.tabs(
+    ["Overview", "Single scenario", "Scenario Explorer", "Calculations", "Runway"])
 
 # ================================================================ tab 1
 with tab1:
@@ -444,12 +444,121 @@ with tab0:
                            "(1,200 months) for this arithmetic — if both are sustainable "
                            "the card shows '—'.")
 
-        st.caption("For full charts and month-by-month detail see the other tabs.")
+        st.caption("For full charts and month-by-month detail see the Single scenario, Scenario Explorer, and Calculations tabs.")
 
-# ================================================================ tab 3 (Details)
+# ================================================================ tab 3 (Calculations)
 with tab3:
-    st.caption("Month-by-month trace of the Single scenario inputs — one row per period, "
-               "like a spreadsheet.")
+    st.caption("Every figure is produced by a month-by-month simulation; the formulas, "
+               "worked examples, and raw data below all reconcile with each other.")
+
+    # ---- Section 1: Formulas ----
+    st.subheader("Formulas")
+    f1, f2 = st.columns(2)
+
+    with f1.container(border=True):
+        st.markdown("**Monthly mortgage payment (P&I)** — standard annuity")
+        st.latex(r"M = L \cdot \frac{r/12}{1 - (1 + r/12)^{-12T}}")
+        st.caption("L = loan (price − down payment), r = mortgage rate, T = term in years. "
+                   "Each month: interest = balance × r/12; principal = M − interest.")
+
+    with f2.container(border=True):
+        st.markdown("**Owner monthly cost, net of tax benefit**")
+        st.latex(r"C_{own} = M + tax + ins + maint + HOA + PMI"
+                 r" - \tau_{marg} \cdot i_{\le 750k}")
+        st.caption("i≤750k = month's interest × min(1, 750,000 ÷ balance). Property tax "
+                   "uses the Prop-13 assessed value (+2%/yr); insurance and maintenance "
+                   "use current market value; PMI while down < 20% until 78% LTV.")
+
+    with f1.container(border=True):
+        st.markdown("**Fairness rule** — both scenarios spend the same total")
+        st.latex(r"spend = \max(C_{own},\ rent);\quad"
+                 r" invest_{cheaper} = |C_{own} - rent|")
+        st.caption("Whichever side has the lower housing outflow invests the difference "
+                   "into its portfolio that month, so only the housing/investing split "
+                   "differs.")
+
+    with f2.container(border=True):
+        st.markdown("**Portfolio growth** — monthly, after annual tax drag")
+        st.latex(r"P_m = P_{m-1}\,\big(1 + r_{alt}(1 - \tau_{ann})\big)^{1/12}"
+                 r" + contrib_m")
+        st.caption("r_alt = investment return (pre-tax), τ_ann = annual tax on returns.")
+
+    with f1.container(border=True):
+        st.markdown("**After-tax portfolio if sold today**")
+        st.latex(r"P^{AT} = P - \tau_{cg} \cdot \max(0,\ P - contributions)")
+        st.caption("Cost basis = all dollars ever contributed; gains above basis are "
+                   "taxed at the capital-gains rate. Applied identically to both sides.")
+
+    with f2.container(border=True):
+        st.markdown("**Net worth (both on an if-sold, after-tax basis)**")
+        st.latex(r"NW_{buy} = P^{AT}_{buy} + H(1 - s) - B \qquad"
+                 r" NW_{rent} = P^{AT}_{rent}")
+        st.caption("H = home value, s = selling costs, B = loan balance. "
+                   "Buy advantage = NW_buy − NW_rent.")
+
+    # ---- Section 2: Worked example ----
+    st.subheader("Worked example at current inputs")
+    if not res.feasible:
+        st.warning("The single-scenario inputs are infeasible (upfront cash exceeds "
+                   "capital), so there is no worked example. Lower the price or down "
+                   "payment.")
+    else:
+        w1, w2, w3 = st.columns(3)
+
+        with w1.container(border=True, height="stretch"):
+            st.markdown("**1 · Closing day** (row 0 in the month-by-month trace)")
+            st.dataframe(pd.DataFrame([
+                ["Investable capital", fmt(capital)],
+                [f"− Down payment ({down_pct:.0%} × price)", fmt(down)],
+                [f"− Closing costs ({closing_pct:.2%} × price)", fmt(price * closing_pct)],
+                ["− One-time costs", fmt(onetime)],
+                ["= Buy portfolio, day 0", fmt(res.portfolio_buy[0])],
+                ["Rent portfolio, day 0 (= capital)", fmt(res.portfolio_rent[0])],
+                ["Home value (= price)", fmt(res.home_value[0])],
+                ["Loan balance (= price − down)", fmt(res.loan_balance[0])],
+            ], columns=["Item", "Amount"]), hide_index=True)
+
+        with w2.container(border=True, height="stretch"):
+            st.markdown("**2 · Month 1 cash flows**")
+            gap = res.outflow_buy[1] - res.outflow_rent[1]
+            flows_to = ("rent" if res.contrib_rent_m[1] > 0 else "buy")
+            st.dataframe(pd.DataFrame([
+                ["P&I payment", fmt(res.payment_m[1])],
+                ["· of which interest", fmt(res.interest_m[1])],
+                ["· of which principal", fmt(res.principal_m[1])],
+                ["+ Property tax", fmt(res.prop_tax_m[1])],
+                ["+ Insurance", fmt(res.insurance_m[1])],
+                ["+ Maintenance", fmt(res.maintenance_m[1])],
+                ["+ HOA", fmt(res.hoa_m[1])],
+                ["+ PMI", fmt(res.pmi_m[1])],
+                ["− Interest tax benefit", fmt(res.tax_benefit_m[1])],
+                ["= Own cost (net)", fmt(res.outflow_buy[1])],
+                ["Rent", fmt(res.outflow_rent[1])],
+                ["Own − rent", f"{'−' if gap < 0 else ''}{fmt(abs(gap))}"],
+                [f"→ invested into {flows_to} portfolio",
+                 fmt(max(res.contrib_buy_m[1], res.contrib_rent_m[1]))],
+            ], columns=["Item", "Amount"]), hide_index=True)
+
+        with w3.container(border=True, height="stretch"):
+            st.markdown(f"**3 · Year {horizon}** (last row in the month-by-month trace)")
+            adv = res.net_worth_buy_liq[-1] - res.net_worth_rent_liq[-1]
+            st.dataframe(pd.DataFrame([
+                ["Buy portfolio (after tax if sold)", fmt(res.portfolio_buy_after_tax[-1])],
+                [f"+ Home value × (1 − {selling_pct:.0%})",
+                 fmt(res.home_value[-1] * (1 - selling_pct))],
+                ["− Loan balance", fmt(res.loan_balance[-1])],
+                ["= Net worth — buy", fmt(res.net_worth_buy_liq[-1])],
+                ["Rent portfolio (after tax if sold)", fmt(res.portfolio_rent_after_tax[-1])],
+                ["= Net worth — rent", fmt(res.net_worth_rent_liq[-1])],
+                ["Buy advantage", f"{'−' if adv < 0 else ''}{fmt(abs(adv))}"],
+            ], columns=["Item", "Amount"]), hide_index=True)
+
+        st.caption("Every value above is read from the same simulation as the charts and "
+                   "the month-by-month trace (Yearly granularity: rows 0, 1 and the last row).")
+
+    # ---- Section 3: Month-by-month trace ----
+    st.subheader("Month-by-month trace")
+    st.caption("One row per period, like a spreadsheet — the raw data behind every chart.")
     gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly",
                                 label_visibility="collapsed",
                                 help="Yearly sums the flows and shows end-of-year "
@@ -586,115 +695,7 @@ with tab3:
   after-tax "if sold" basis.
 """)
 
-# ================================================================ tab 4 (Methodology)
-with tab4:
-    st.caption("Every figure is produced by a month-by-month simulation of the formulas "
-               "below; the worked example evaluates them at your current inputs and "
-               "reconciles exactly with the Details table.")
-
-    st.subheader("Formulas")
-    f1, f2 = st.columns(2)
-
-    with f1.container(border=True):
-        st.markdown("**Monthly mortgage payment (P&I)** — standard annuity")
-        st.latex(r"M = L \cdot \frac{r/12}{1 - (1 + r/12)^{-12T}}")
-        st.caption("L = loan (price − down payment), r = mortgage rate, T = term in years. "
-                   "Each month: interest = balance × r/12; principal = M − interest.")
-
-    with f2.container(border=True):
-        st.markdown("**Owner monthly cost, net of tax benefit**")
-        st.latex(r"C_{own} = M + tax + ins + maint + HOA + PMI"
-                 r" - \tau_{marg} \cdot i_{\le 750k}")
-        st.caption("i≤750k = month's interest × min(1, 750,000 ÷ balance). Property tax "
-                   "uses the Prop-13 assessed value (+2%/yr); insurance and maintenance "
-                   "use current market value; PMI while down < 20% until 78% LTV.")
-
-    with f1.container(border=True):
-        st.markdown("**Fairness rule** — both scenarios spend the same total")
-        st.latex(r"spend = \max(C_{own},\ rent);\quad"
-                 r" invest_{cheaper} = |C_{own} - rent|")
-        st.caption("Whichever side has the lower housing outflow invests the difference "
-                   "into its portfolio that month, so only the housing/investing split "
-                   "differs.")
-
-    with f2.container(border=True):
-        st.markdown("**Portfolio growth** — monthly, after annual tax drag")
-        st.latex(r"P_m = P_{m-1}\,\big(1 + r_{alt}(1 - \tau_{ann})\big)^{1/12}"
-                 r" + contrib_m")
-        st.caption("r_alt = investment return (pre-tax), τ_ann = annual tax on returns.")
-
-    with f1.container(border=True):
-        st.markdown("**After-tax portfolio if sold today**")
-        st.latex(r"P^{AT} = P - \tau_{cg} \cdot \max(0,\ P - contributions)")
-        st.caption("Cost basis = all dollars ever contributed; gains above basis are "
-                   "taxed at the capital-gains rate. Applied identically to both sides.")
-
-    with f2.container(border=True):
-        st.markdown("**Net worth (both on an if-sold, after-tax basis)**")
-        st.latex(r"NW_{buy} = P^{AT}_{buy} + H(1 - s) - B \qquad"
-                 r" NW_{rent} = P^{AT}_{rent}")
-        st.caption("H = home value, s = selling costs, B = loan balance. "
-                   "Buy advantage = NW_buy − NW_rent.")
-
-    st.subheader("Worked example at current inputs")
-    if not res.feasible:
-        st.warning("The single-scenario inputs are infeasible (upfront cash exceeds "
-                   "capital), so there is no worked example. Lower the price or down "
-                   "payment.")
-    else:
-        w1, w2, w3 = st.columns(3)
-
-        with w1.container(border=True, height="stretch"):
-            st.markdown("**1 · Closing day** (row 0 in Details)")
-            st.dataframe(pd.DataFrame([
-                ["Investable capital", fmt(capital)],
-                [f"− Down payment ({down_pct:.0%} × price)", fmt(down)],
-                [f"− Closing costs ({closing_pct:.2%} × price)", fmt(price * closing_pct)],
-                ["− One-time costs", fmt(onetime)],
-                ["= Buy portfolio, day 0", fmt(res.portfolio_buy[0])],
-                ["Rent portfolio, day 0 (= capital)", fmt(res.portfolio_rent[0])],
-                ["Home value (= price)", fmt(res.home_value[0])],
-                ["Loan balance (= price − down)", fmt(res.loan_balance[0])],
-            ], columns=["Item", "Amount"]), hide_index=True)
-
-        with w2.container(border=True, height="stretch"):
-            st.markdown("**2 · Month 1 cash flows**")
-            gap = res.outflow_buy[1] - res.outflow_rent[1]
-            flows_to = ("rent" if res.contrib_rent_m[1] > 0 else "buy")
-            st.dataframe(pd.DataFrame([
-                ["P&I payment", fmt(res.payment_m[1])],
-                ["· of which interest", fmt(res.interest_m[1])],
-                ["· of which principal", fmt(res.principal_m[1])],
-                ["+ Property tax", fmt(res.prop_tax_m[1])],
-                ["+ Insurance", fmt(res.insurance_m[1])],
-                ["+ Maintenance", fmt(res.maintenance_m[1])],
-                ["+ HOA", fmt(res.hoa_m[1])],
-                ["+ PMI", fmt(res.pmi_m[1])],
-                ["− Interest tax benefit", fmt(res.tax_benefit_m[1])],
-                ["= Own cost (net)", fmt(res.outflow_buy[1])],
-                ["Rent", fmt(res.outflow_rent[1])],
-                ["Own − rent", f"{'−' if gap < 0 else ''}{fmt(abs(gap))}"],
-                [f"→ invested into {flows_to} portfolio",
-                 fmt(max(res.contrib_buy_m[1], res.contrib_rent_m[1]))],
-            ], columns=["Item", "Amount"]), hide_index=True)
-
-        with w3.container(border=True, height="stretch"):
-            st.markdown(f"**3 · Year {horizon}** (last row in Details)")
-            adv = res.net_worth_buy_liq[-1] - res.net_worth_rent_liq[-1]
-            st.dataframe(pd.DataFrame([
-                ["Buy portfolio (after tax if sold)", fmt(res.portfolio_buy_after_tax[-1])],
-                [f"+ Home value × (1 − {selling_pct:.0%})",
-                 fmt(res.home_value[-1] * (1 - selling_pct))],
-                ["− Loan balance", fmt(res.loan_balance[-1])],
-                ["= Net worth — buy", fmt(res.net_worth_buy_liq[-1])],
-                ["Rent portfolio (after tax if sold)", fmt(res.portfolio_rent_after_tax[-1])],
-                ["= Net worth — rent", fmt(res.net_worth_rent_liq[-1])],
-                ["Buy advantage", f"{'−' if adv < 0 else ''}{fmt(abs(adv))}"],
-            ], columns=["Item", "Amount"]), hide_index=True)
-
-        st.caption("Every value above is read from the same simulation as the charts and "
-                   "the Details table (Yearly granularity: rows 0, 1 and the last row).")
-
+    # ---- Model assumptions (bottom of tab) ----
     with st.expander("Model assumptions & known simplifications", icon=":material/info:"):
         st.markdown("""
 - **Fair comparison:** both scenarios spend the same total each month — whichever has the
@@ -712,8 +713,8 @@ with tab4:
 - All figures are **nominal** dollars.
 """)
 
-# ================================================================ tab 5 (Runway)
-with tab5:
+# ================================================================ tab 4 (Runway)
+with tab4:
     st.caption(
         "Assumes you retire today with no income and pay all housing costs "
         "out of your liquid investment portfolio. "
