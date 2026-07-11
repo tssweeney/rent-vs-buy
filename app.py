@@ -185,7 +185,7 @@ base = Assumptions(
 )
 
 # ---------------------------------------------------------------- main
-st.title("Rent vs. Buy")
+st.subheader("Rent vs. Buy")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Single scenario", "Price × down payment sweep", "Details", "Methodology", "Runway"])
