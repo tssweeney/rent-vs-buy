@@ -1,22 +1,12 @@
-# Professional Financial Dashboard Theme (Dark)
-# Conservative, trustworthy palette with clear data visualization
+# Financial dashboard theme — follows the system light/dark preference.
+# Shared typography/shape in [theme]; per-mode palettes in [theme.light]/[theme.dark].
 
 [theme]
-base = "dark"
-primaryColor = "#60A5FA"             # Bright blue for dark mode
-backgroundColor = "#0F172A"          # Deep slate
-secondaryBackgroundColor = "#1E293B" # Slightly lighter slate
-codeBackgroundColor = "#1E293B"
-textColor = "#F1F5F9"                # Light text
-linkColor = "#60A5FA"
-borderColor = "#334155"
-codeTextColor = "#CBD5E1"
 showWidgetBorder = true
 showSidebarBorder = true
-baseRadius = "6px"                   # Subtle rounding - professional, not playful
+baseRadius = "6px"
 buttonRadius = "6px"
 
-# Typography - Clean, professional fonts
 font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
 headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
 codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
@@ -27,16 +17,59 @@ headingFontSizes = ["28px", "22px", "18px", "16px", "14px", "12px"]
 headingFontWeights = [700, 600, 600, 600, 500, 500]
 linkUnderline = false
 
-# Semantic colors for financial indicators
-greenColor = "#34D399"  # Positive/gains - bright green
-redColor = "#F87171"    # Negative/losses - bright red
-yellowColor = "#FBBF24" # Warnings/caution
-orangeColor = "#FB923C" # Alerts
-blueColor = "#60A5FA"   # Informational
-violetColor = "#A78BFA" # Accent/highlights
-grayColor = "#94A3B8"   # Neutral/secondary text
+[theme.light]
+primaryColor = "#2563EB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+codeBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+linkColor = "#2563EB"
+borderColor = "#CBD5E1"
+codeTextColor = "#334155"
+greenColor = "#059669"
+redColor = "#DC2626"
+yellowColor = "#D97706"
+orangeColor = "#EA580C"
+blueColor = "#2563EB"
+violetColor = "#7C3AED"
+grayColor = "#64748B"
+chartCategoricalColors = [
+    "#2563EB",
+    "#059669",
+    "#7C3AED",
+    "#DC2626",
+    "#D97706",
+    "#0284C7",
+    "#64748B",
+    "#EA580C",
+]
+dataframeBorderColor = "#CBD5E1"
+dataframeHeaderBackgroundColor = "#F1F5F9"
 
-# Chart colors - Distinguishable palette for financial data
+[theme.light.sidebar]
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#E2E8F0"
+codeBackgroundColor = "#E2E8F0"
+textColor = "#0F172A"
+borderColor = "#CBD5E1"
+primaryColor = "#2563EB"
+
+[theme.dark]
+primaryColor = "#60A5FA"
+backgroundColor = "#0F172A"
+secondaryBackgroundColor = "#1E293B"
+codeBackgroundColor = "#1E293B"
+textColor = "#F1F5F9"
+linkColor = "#60A5FA"
+borderColor = "#334155"
+codeTextColor = "#CBD5E1"
+greenColor = "#34D399"
+redColor = "#F87171"
+yellowColor = "#FBBF24"
+orangeColor = "#FB923C"
+blueColor = "#60A5FA"
+violetColor = "#A78BFA"
+grayColor = "#94A3B8"
 chartCategoricalColors = [
     "#60A5FA",
     "#34D399",
@@ -47,27 +80,10 @@ chartCategoricalColors = [
     "#94A3B8",
     "#FB923C",
 ]
-
-# Sequential colors for heatmaps (blue gradient)
-chartSequentialColors = [
-    "#0C4A6E",
-    "#075985",
-    "#0369A1",
-    "#0284C7",
-    "#0EA5E9",
-    "#38BDF8",
-    "#7DD3FC",
-    "#BAE6FD",
-    "#E0F2FE",
-    "#F0F9FF",
-]
-
-# Dataframe styling
 dataframeBorderColor = "#334155"
 dataframeHeaderBackgroundColor = "#1E293B"
 
-# Sidebar
-[theme.sidebar]
+[theme.dark.sidebar]
 backgroundColor = "#0F172A"
 secondaryBackgroundColor = "#1E293B"
 codeBackgroundColor = "#1E293B"
