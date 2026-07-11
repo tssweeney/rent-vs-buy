@@ -295,12 +295,40 @@ with tab1:
 
         r2c1, r2c2 = st.columns(2)
         with r2c1.container(border=True):
-            st.markdown("**Monthly housing outflow**")
+            st.markdown("**Monthly owner cost breakdown**")
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=yrs[1:], y=res.outflow_buy[1:], name="Own (net)"))
-            fig2.add_trace(go.Scatter(x=yrs[1:], y=res.outflow_rent[1:], name="Rent"))
+            # Stacked area traces — skip any series that is all zeros
+            _x = yrs[1:]
+            _components = [
+                ("Interest",      res.interest_m[1:]),
+                ("Principal",     res.principal_m[1:]),
+                ("Property tax",  res.prop_tax_m[1:]),
+                ("Insurance",     res.insurance_m[1:]),
+                ("Maintenance",   res.maintenance_m[1:]),
+                ("HOA",           res.hoa_m[1:]),
+                ("PMI",           res.pmi_m[1:]),
+            ]
+            for _name, _series in _components:
+                if max(_series) > 0:
+                    fig2.add_trace(go.Scatter(
+                        x=_x, y=_series, name=_name,
+                        stackgroup="own", line=dict(width=0.5),
+                        hovertemplate="%{y:$,.0f}",
+                    ))
+            # Overlay lines (not stacked)
+            fig2.add_trace(go.Scatter(
+                x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit)",
+                line=dict(width=2, color="black"),
+                hovertemplate="%{y:$,.0f}",
+            ))
+            fig2.add_trace(go.Scatter(
+                x=_x, y=res.outflow_rent[1:], name="Rent",
+                line=dict(width=2, dash="dash", color="gray"),
+                hovertemplate="%{y:$,.0f}",
+            ))
             st.plotly_chart(compact(fig2, xaxis_title="Years", yaxis_title="$/mo"))
-            st.caption("Owning steps down when PMI drops off; rent compounds yearly.")
+            st.caption("Bands stack to gross cost; the net line subtracts the interest "
+                       "deduction. Principal builds equity — cash out, but not lost.")
 
         with r2c2.container(border=True):
             st.markdown("**Sensitivity: buy advantage vs. investment return**")
