@@ -36,8 +36,8 @@ class Assumptions:
     horizon_years: int = 10
 
     # markets
-    alt_return_annual: float = 0.07      # nominal pre-tax return on investments
-    investment_tax_drag: float = 0.10    # annual drag: dividends/turnover taxed yearly
+    alt_return_annual: float = 0.035     # nominal pre-tax return on investments
+    investment_tax_drag: float = 0.0     # annual drag: dividends/turnover taxed yearly
     cap_gains_rate: float = 0.25         # tax on unrealized gains when portfolio is sold
     inflation: float = 0.025
 
@@ -46,17 +46,17 @@ class Assumptions:
     down_pct: float = 0.50
     mortgage_rate: float = 0.065
     term_years: int = 30
-    closing_buy_pct: float = 0.02        # escrow/title/origination, % of price
+    closing_buy_pct: float = 0.015       # escrow/title/origination, % of price
     other_onetime_costs: float = 10_000  # moving, immediate fixes, etc.
     selling_cost_pct: float = 0.06       # agent commissions + fees at exit
 
     # carrying costs
-    home_appreciation: float = 0.04
+    home_appreciation: float = 0.055
     property_tax_rate: float = 0.0115    # of purchase price initially
     prop_tax_growth: float = 0.02        # Prop 13 assessed-value cap
     insurance_rate: float = 0.0025       # of current home value, annual
     maintenance_rate: float = 0.01       # of current home value, annual
-    hoa_monthly: float = 0.0
+    hoa_monthly: float = 250.0
     pmi_rate: float = 0.006              # of balance, annual, while LTV > 80%
 
     # taxes
@@ -65,8 +65,8 @@ class Assumptions:
     interest_deduction_cap: float = 750_000
 
     # rent alternative
-    monthly_rent: float = 5_300
-    rent_growth: float = 0.035
+    monthly_rent: float = 4_167   # ~$1.4M / 28 / 12, consistent with p2r=28 default
+    rent_growth: float = 0.04
 
 
 @dataclass

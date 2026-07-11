@@ -20,15 +20,15 @@ st.set_page_config(page_title="Rent vs. Buy", layout="wide")
 DEFAULTS = {
     # sidebar
     "capital": 1_500_000, "horizon": 10,
-    "alt_return": 7.0, "inv_tax": 10.0, "cap_gains": 25.0,
-    "home_appr": 4.0, "rent_growth": 3.5,
+    "alt_return": 3.5, "inv_tax": 0.0, "cap_gains": 25.0,
+    "home_appr": 5.5, "rent_growth": 4.0,
     "mort_rate": 6.5, "term": 30,
-    "closing_pct": 2.0, "onetime": 10_000, "selling_pct": 6.0,
-    "prop_tax": 1.15, "insurance": 0.25, "maintenance": 1.0, "hoa": 0,
+    "closing_pct": 1.5, "onetime": 10_000, "selling_pct": 6.0,
+    "prop_tax": 1.15, "insurance": 0.25, "maintenance": 1.0, "hoa": 250,
     "marginal": 42.0, "deduct": True,
-    "p2r": 22.0,
+    "p2r": 28.0,
     # single-scenario tab
-    "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 5_300,
+    "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 4_167,
     # sweep tab constraints
     "min_reserve": 300_000, "max_monthly": 0, "pmax": 1_500_000,
 }
@@ -90,56 +90,68 @@ with st.sidebar.expander("Scenarios", icon=":material/bookmark:"):
 
 st.sidebar.title("Assumptions")
 
-st.sidebar.subheader("Capital & horizon")
-capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
-                                  step=50_000, key="capital")
-horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon")
+# ---- Section 1: The deal ----------------------------------------
+st.sidebar.subheader("The deal")
+mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
+                              step=0.125, key="mort_rate") / 100
+term = st.sidebar.radio("Term (years)", [15, 30], horizontal=True, key="term")
+closing_pct = st.sidebar.slider("Buy closing costs (% of price)", 0.0, 5.0,
+                                step=0.25, key="closing_pct") / 100
+onetime = st.sidebar.slider("Other one-time costs ($, moving etc.)", 0, 100_000,
+                            step=5_000, key="onetime")
+hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa")
 
-st.sidebar.subheader("Markets")
-alt_return = st.sidebar.slider("Investment return (nominal, pre-tax, %)", 0.0, 12.0,
-                               step=0.25, key="alt_return") / 100
-inv_tax = st.sidebar.slider("Annual tax drag on returns (%)", 0.0, 50.0, step=1.0,
-                            key="inv_tax",
-                            help="Taxes paid yearly on dividends and fund turnover. "
-                                 "Price appreciation is taxed separately, at sale.") / 100
-cap_gains = st.sidebar.slider("Capital gains tax at sale (%)", 0.0, 45.0, step=1.0,
-                              key="cap_gains",
-                              help="Applied to unrealized gains (value − contributions) in "
-                                   "all 'if sold' figures, for both scenarios.") / 100
+# ---- Section 2: The market --------------------------------------
+st.sidebar.subheader("The market")
+alt_return = st.sidebar.slider(
+    "Investment return (nominal, pre-tax, %)", 0.0, 12.0,
+    step=0.25, key="alt_return",
+    help="Default (3.5%) represents a high-yield-savings-style safe return. "
+         "If you plan to hold equities, raise this — historically stocks have "
+         "returned ~7–10% nominal before tax.",
+) / 100
 home_appr = st.sidebar.slider("Home appreciation (%/yr)", 0.0, 10.0,
                               step=0.25, key="home_appr") / 100
 rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
                                 step=0.25, key="rent_growth") / 100
-
-st.sidebar.subheader("Mortgage")
-mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
-                              step=0.125, key="mort_rate") / 100
-term = st.sidebar.radio("Term (years)", [15, 30], horizontal=True, key="term")
-
-st.sidebar.subheader("Transaction & carrying costs")
-closing_pct = st.sidebar.slider("Buy closing costs (% of price)", 0.0, 5.0,
-                                step=0.25, key="closing_pct") / 100
-onetime = st.sidebar.number_input("Other one-time costs ($, moving etc.)", 0, 200_000,
-                                  step=5_000, key="onetime")
-selling_pct = st.sidebar.slider("Selling costs at exit (% of value)", 0.0, 10.0,
-                                step=0.5, key="selling_pct") / 100
+_price_for_caption = st.session_state.get("price", DEFAULTS["price"])
+p2r = st.sidebar.slider(
+    "Market price-to-rent ratio", 10.0, 45.0, step=0.5, key="p2r",
+    help="Purchase price ÷ annual rent for comparable homes. "
+         "Higher = buying is expensive relative to renting. "
+         "San Diego is roughly 25–30.",
+)
+st.sidebar.caption(
+    f"At ratio {p2r:.0f}, a {fmt(_price_for_caption)} home rents for "
+    f"≈ {fmt(rent_from_price(_price_for_caption, p2r))}/mo"
+)
 prop_tax = st.sidebar.slider("Property tax (initial, % of price)", 0.5, 2.5,
                              step=0.05, key="prop_tax") / 100
 insurance = st.sidebar.slider("Insurance (% of value/yr)", 0.0, 1.0,
                               step=0.05, key="insurance") / 100
 maintenance = st.sidebar.slider("Maintenance (% of value/yr)", 0.0, 3.0,
                                 step=0.25, key="maintenance") / 100
-hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa")
+selling_pct = st.sidebar.slider("Selling costs at exit (% of value)", 0.0, 10.0,
+                                step=0.5, key="selling_pct") / 100
 
-st.sidebar.subheader("Income taxes")
+# ---- Section 3: Personal ----------------------------------------
+st.sidebar.subheader("Personal")
+capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
+                                  step=50_000, key="capital")
+horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon")
 marginal = st.sidebar.slider("Combined marginal tax rate (%)", 0.0, 55.0,
                              step=1.0, key="marginal") / 100
 deduct = st.sidebar.checkbox("Deduct mortgage interest (≤ $750k of balance)", key="deduct")
-
-st.sidebar.subheader("Rent alternative")
-p2r = st.sidebar.slider("Price-to-rent ratio (annual)", 10.0, 45.0, step=0.5, key="p2r",
-                        help="Comparable home's annual rent = price / ratio. Used to scale "
-                             "rent with price in the sweep, and optionally below.")
+inv_tax = st.sidebar.slider(
+    "Annual tax on investment income (%)", 0.0, 50.0, step=1.0,
+    key="inv_tax",
+    help="Applies yearly (like HYSA interest or dividends taxed each year). "
+         "Leave at 0 to tax all growth at sale instead.",
+) / 100
+cap_gains = st.sidebar.slider("Capital gains tax at sale (%)", 0.0, 45.0, step=1.0,
+                              key="cap_gains",
+                              help="Applied to unrealized gains (value − contributions) in "
+                                   "all 'if sold' figures, for both scenarios.") / 100
 
 base = Assumptions(
     capital=capital, horizon_years=horizon,
