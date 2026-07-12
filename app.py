@@ -272,17 +272,34 @@ def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("Assumptions")
 
-# ---- Section 0: The move ----------------------------------------
-st.sidebar.subheader("The move")
+# ---- Section 0: Investment --------------------------------------
+st.sidebar.subheader("Investment")
+capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
+                                  step=50_000, key="capital",
+                                  help="Total cash you're deploying. Buy: pays down payment "
+                                       "+ closing + one-time costs, remainder is invested. "
+                                       "Rent: all of it is invested.")
+alt_return = st.sidebar.slider(
+    "Investment return (%, pre-tax)", 0.0, 12.0,
+    step=0.25, key="alt_return",
+    help="Default (3.5%) represents a high-yield-savings-style safe return. "
+         "If you plan to hold equities, raise this — historically stocks have "
+         "returned ~7–10% nominal before tax.",
+) / 100
+
+# ---- Section 1: The property ------------------------------------
+st.sidebar.subheader("The property")
 price = st.sidebar.number_input("Purchase price ($)", 200_000, 5_000_000,
                                 step=25_000, key="price",
                                 help="Contract price of the home. Drives the loan size, "
                                      "property tax, and the comparable rent.")
-down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct",
-                             help="Share of the price paid in cash at closing; the rest "
-                                  "is the mortgage. Below 20% adds PMI until you reach "
-                                  "22% equity.") / 100
-st.sidebar.caption(f"Down payment: {fmtm(price * down_pct)}")
+onetime = st.sidebar.slider("One-time costs ($)", 0, 100_000,
+                            step=5_000, key="onetime",
+                            help="Movers, immediate repairs, furniture — cash spent once "
+                                 "at move-in, gone from the buy-side portfolio.")
+hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa",
+                              help="Monthly homeowners-association dues, if any. Flat — "
+                                   "does not grow in this model.")
 derive_rent = st.sidebar.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
                                   help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
                                        "so it tracks the purchase price. Off: type a rent "
@@ -295,8 +312,13 @@ else:
                                          "at the rent-growth rate each year.")
 st.sidebar.caption(f"Comparable rent: {fmtm(rent0)}/mo")
 
-# ---- Section 1: The deal ----------------------------------------
-st.sidebar.subheader("The deal")
+# ---- Section 2: Financing ---------------------------------------
+st.sidebar.subheader("Financing")
+down_pct = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct",
+                             help="Share of the price paid in cash at closing; the rest "
+                                  "is the mortgage. Below 20% adds PMI until you reach "
+                                  "22% equity.") / 100
+st.sidebar.caption(f"Down payment: {fmtm(price * down_pct)}")
 mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
                               step=0.125, key="mort_rate",
                               help="Fixed note rate from your lender quote (not APR — "
@@ -309,23 +331,9 @@ closing_pct = st.sidebar.slider("Closing costs (% of price)", 0.0, 5.0,
                                 step=0.25, key="closing_pct",
                                 help="Escrow, title, origination, inspection etc., paid in "
                                      "cash at closing on top of the down payment.") / 100
-onetime = st.sidebar.slider("One-time costs ($)", 0, 100_000,
-                            step=5_000, key="onetime",
-                            help="Movers, immediate repairs, furniture — cash spent once "
-                                 "at move-in, gone from the buy-side portfolio.")
-hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa",
-                              help="Monthly homeowners-association dues, if any. Flat — "
-                                   "does not grow in this model.")
 
-# ---- Section 2: The market --------------------------------------
+# ---- Section 3: The market --------------------------------------
 st.sidebar.subheader("The market")
-alt_return = st.sidebar.slider(
-    "Investment return (%, pre-tax)", 0.0, 12.0,
-    step=0.25, key="alt_return",
-    help="Default (3.5%) represents a high-yield-savings-style safe return. "
-         "If you plan to hold equities, raise this — historically stocks have "
-         "returned ~7–10% nominal before tax.",
-) / 100
 home_appr = st.sidebar.slider("Home appreciation (%/yr)", 0.0, 10.0,
                               step=0.25, key="home_appr",
                               help="Nominal annual growth of the home's market value. "
@@ -363,13 +371,8 @@ selling_pct = st.sidebar.slider("Selling costs (% of value)", 0.0, 10.0,
                                 help="Agent commissions + seller closing costs, subtracted "
                                      "from home value in every 'if sold' figure.") / 100
 
-# ---- Section 3: Personal ----------------------------------------
+# ---- Section 4: Personal ----------------------------------------
 st.sidebar.subheader("Personal")
-capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
-                                  step=50_000, key="capital",
-                                  help="Total cash you're deploying. Buy: pays down payment "
-                                       "+ closing + one-time costs, remainder is invested. "
-                                       "Rent: all of it is invested.")
 horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon",
                             help="When the two scenarios are compared: both are valued "
                                  "'if sold' at this point.")
