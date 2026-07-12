@@ -269,6 +269,81 @@ def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
     return results
 
 
+@st.cache_data(show_spinner="Computing down-payment optimization curves...")
+def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
+    """Sweep down payment 0–100% in 5% steps at the current price.
+
+    Returns three parallel lists (one entry per feasible down %):
+      wealth_curve  : list of (down_pct_int, breakeven_yr | None)
+      cashflow_curve: list of (down_pct_int, gross_cashflow_breakeven_yr | None)
+      runway_curve  : list of (down_pct_int, buy_runway_yr | None)
+
+    None means 'never within horizon' / infeasible.
+    """
+    wealth_curve = []
+    cashflow_curve = []
+    runway_curve = []
+
+    for d_int in range(0, 101, 5):
+        d = d_int / 100
+        upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
+        if upfront_d > base_a.capital:
+            # infeasible — skip (gap in the chart)
+            continue
+
+        a_d = replace(base_a, price=price_v, down_pct=d, monthly_rent=rent_v)
+
+        # simulate() — wealth breakeven + gross cash-flow breakeven
+        r = simulate(a_d)
+        # wealth breakeven
+        be_yr = r.breakeven_month / 12 if r.breakeven_month > 0 else None
+        wealth_curve.append((d_int, be_yr))
+
+        # gross cash-flow breakeven (first month gross own cost ≤ rent)
+        cf_be_month = None
+        for m in range(1, len(r.outflow_buy)):
+            if (r.outflow_buy[m] + r.tax_benefit_m[m]) <= r.outflow_rent[m]:
+                cf_be_month = m
+                break
+        cf_be_yr = cf_be_month / 12 if cf_be_month is not None else None
+        cashflow_curve.append((d_int, cf_be_yr))
+
+        # runway() — buy runway
+        rr = runway(a_d)
+        buy_yrs = (rr.depleted_buy_month / 12
+                   if rr.depleted_buy_month is not None else 100.0)
+        runway_curve.append((d_int, min(buy_yrs, 100.0)))
+
+    return wealth_curve, cashflow_curve, runway_curve
+
+
+def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240):
+    """Compact line+marker chart for a single down-payment optimization curve.
+
+    curve: list of (down_pct_int, value | None)
+    Gaps (None values) are excluded; a connected line is drawn through valid points.
+    """
+    xs = [d for d, v in curve if v is not None]
+    ys = [v for d, v in curve if v is not None]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=xs, y=ys, mode="lines+markers",
+        line=dict(width=2),
+        marker=dict(size=6),
+        hovertemplate=f"Down %{{x:.0f}}%<br>{hover_label}: %{{y:.1f}} yrs<extra></extra>",
+    ))
+    fig.update_layout(
+        height=height,
+        margin=dict(l=40, r=20, t=30, b=30),
+        hovermode="x unified",
+        showlegend=False,
+        xaxis_title="Down payment (%)",
+        yaxis_title=yaxis_title,
+    )
+    return fig
+
+
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("Assumptions")
 
@@ -513,13 +588,14 @@ with tab0:
         else:
             _be_label = "never (in horizon)"
 
-        # --- Metric 3: Monthly cost vs rent (mo 1) ---
-        _cost_diff = res.outflow_buy[1] - res.outflow_rent[1]
+        # --- Metric 3: Monthly cost vs rent (mo 1) — GROSS (before interest deduction) ---
+        _cost_diff = (res.outflow_buy[1] + res.tax_benefit_m[1]) - res.outflow_rent[1]
 
-        # --- Metric 4: Monthly cost breakeven ---
+        # --- Metric 4: Monthly cost breakeven — GROSS ---
         _cash_be_month = None
         for _m in range(1, len(res.outflow_buy)):
-            if res.outflow_buy[_m] <= res.outflow_rent[_m]:
+            _gross_own = res.outflow_buy[_m] + res.tax_benefit_m[_m]
+            if _gross_own <= res.outflow_rent[_m]:
                 _cash_be_month = _m
                 break
         if _cash_be_month is None:
@@ -550,17 +626,23 @@ with tab0:
         # ================================================================ Overview — unified single-screen columns
         _ov_upfront = down + price * closing_pct + onetime
         MCH = 115   # uniform card height for all 18 metric cards (hero + supplementary)
-        _W_CHART_H = 430   # Wealth chart height
-        _CF_CHART_H = 430  # Cash flow chart height
-        _RT_CHART_H = 430  # Retirement chart height
+        _W_CHART_H = 380   # Wealth chart height
+        _CF_CHART_H = 380  # Cash flow chart height
+        _RT_CHART_H = 380  # Retirement chart height
+        _OPT_H = 240       # optimization sub-chart height
 
         _yrs = np.array(res.months) / 12
 
+        # Down-payment sweep for per-category optimization charts
+        _dp_wealth_curve, _dp_cashflow_curve, _dp_runway_curve = _down_pct_sweep(base, price, rent0)
+
         # Cash flow derived values
-        _own_cost_m1 = res.outflow_buy[1]
+        _own_cost_m1_gross = res.outflow_buy[1] + res.tax_benefit_m[1]  # gross: add back the deduction
+        _own_cost_m1 = res.outflow_buy[1]  # net (kept for other uses)
         _rent_m1 = res.outflow_rent[1]
         _tax_benefit_m1 = res.tax_benefit_m[1]
         _principal_m1 = res.principal_m[1]
+        _cost_diff_gross = _own_cost_m1_gross - _rent_m1
 
         # Retirement derived values
         def _runway_label(depleted_month, max_years=100):
@@ -601,6 +683,19 @@ with tab0:
                 with st.expander("About this chart"):
                     st.markdown("Solid = if sold today (after selling costs and cap-gains "
                                 "tax); dotted = mark-to-market.")
+            with st.container(border=True):
+                st.markdown("**Net worth breakeven vs. down payment**")
+                _w_opt_fig = _down_sweep_line_fig(
+                    _dp_wealth_curve, "Breakeven (yrs)", "Breakeven", height=_OPT_H)
+                st.plotly_chart(_w_opt_fig, key="ov_wealth_dp_sweep")
+                with st.expander("About this chart"):
+                    st.markdown(
+                        "Year at which buy net worth (after selling costs) first exceeds "
+                        "rent net worth, as a function of down payment at the current price. "
+                        "Gaps = infeasible (upfront cash exceeds capital). "
+                        "The marker at the current sidebar down payment can be read off "
+                        "against the main breakeven card above."
+                    )
 
         # ---- Cash flow column ----
         with ov_col_cf:
@@ -611,19 +706,20 @@ with tab0:
             _cf_h1.metric("Monthly cost vs rent (mo 1)", fmt(_cost_diff),
                           delta="buy costs more/mo" if _cost_diff > 0 else "buy costs less/mo",
                           delta_color="off", border=True, height=MCH,
-                          help="Owner's net monthly cost minus rent in month 1. "
-                               "The cheaper side invests the difference every month.")
+                          help="Gross owner cost minus rent in month 1 — cash actually out the door. "
+                               "The interest deduction arrives at tax filing and is counted in net worth, "
+                               "not netted into this monthly figure.")
             _cf_h2.metric("Monthly cost breakeven", _cash_be_label, border=True, height=MCH,
-                          help="First month the owner's net monthly cost is at or below rent — "
-                               "i.e., when owning becomes cheaper month-to-month. "
-                               "This is cash-flow breakeven, distinct from net-worth breakeven: "
-                               "even before this point the buy scenario may be building wealth "
-                               "through equity, but owning still costs more out-of-pocket.")
+                          help="First month the gross owner cost (before the interest deduction) "
+                               "is at or below rent — i.e., when owning is cheaper month-to-month "
+                               "on a cash-out-the-door basis. The deduction arrives annually at "
+                               "tax time and is counted in net worth, not subtracted here.")
             # Supplementary row (1×2)
             _cf_r1c1, _cf_r1c2 = st.columns(2, gap="small")
-            _cf_r1c1.metric("Own cost (mo 1, net)", fmt(_own_cost_m1), border=True, height=MCH,
-                            help="P&I + property tax + insurance + maintenance + HOA + PMI "
-                                 "minus the interest-deduction benefit — your true monthly outflow in month 1.")
+            _cf_r1c1.metric("Own cost (mo 1)", fmt(_own_cost_m1_gross), border=True, height=MCH,
+                            help="P&I + property tax + insurance + maintenance + HOA + PMI, "
+                                 "before the interest deduction (which arrives annually at tax "
+                                 "time and is counted in net worth).")
             _cf_r1c2.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=MCH,
                             help="Month-1 rent for the comparable home. Grows at the rent-growth "
                                  "rate each year.")
@@ -634,6 +730,19 @@ with tab0:
                     st.markdown("Bands stack to gross cost; the net line subtracts the "
                                 "interest deduction. Principal builds equity — cash out, "
                                 "but not lost.")
+            with st.container(border=True):
+                st.markdown("**Monthly cost breakeven vs. down payment**")
+                _cf_opt_fig = _down_sweep_line_fig(
+                    _dp_cashflow_curve, "Breakeven (yrs)", "Cash-flow breakeven", height=_OPT_H)
+                st.plotly_chart(_cf_opt_fig, key="ov_cashflow_dp_sweep")
+                with st.expander("About this chart"):
+                    st.markdown(
+                        "Year at which the gross owner cost (before the interest deduction) "
+                        "first falls at or below rent, as a function of down payment at the "
+                        "current price. A larger down payment means a smaller mortgage, so "
+                        "the gross cost breakeven typically comes sooner. "
+                        "Gaps = infeasible (upfront cash exceeds capital)."
+                    )
 
         # ---- Retirement column ----
         with ov_col_rt:
@@ -679,6 +788,22 @@ with tab0:
                         "but may have lower ongoing costs depending on loan size."
                         + _sale_note_ov
                     )
+            with st.container(border=True):
+                st.markdown("**Runway vs. down payment**")
+                _rt_opt_fig, _rt_opt_peak_down, _rt_opt_peak_yrs = runway_sweep_fig(
+                    _dp_runway_curve, rwy.depleted_rent_month, height=_OPT_H)
+                if _rt_opt_fig is not None:
+                    st.plotly_chart(_rt_opt_fig, key="ov_runway_sweep")
+                    with st.expander("About this chart"):
+                        st.markdown(
+                            "Total buy runway (owner phase + post-sale renter phase) at each "
+                            "down payment level. Peak buy runway at "
+                            f"{_rt_opt_peak_down:.0f}% down → {_rt_opt_peak_yrs:.1f} yrs. "
+                            "Dashed line = rent runway. Gaps = infeasible (upfront > capital). "
+                            "Capped at 100 yrs."
+                        )
+                else:
+                    st.info("No feasible down payments at the current price and capital.")
 
 # ================================================================ tab 3 (Calculations)
 with tab3:
@@ -1355,19 +1480,3 @@ with tab5:
             st.markdown("**Sensitivity: buy advantage vs. investment return**")
             st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="sup_sensitivity")
             st.caption("Zero crossing = investment return at which renting starts to win.")
-
-        sup_col3, _ = st.columns(2)
-        with sup_col3.container(border=True):
-            st.markdown("**Runway vs. down payment at current price**")
-            _sup_sweep = _runway_sweep(base, price, rent0)
-            _sup_fig, _sup_peak_down, _sup_peak_yrs = runway_sweep_fig(
-                _sup_sweep, rwy.depleted_rent_month)
-            if _sup_fig is not None:
-                st.plotly_chart(_sup_fig, key="sup_runway_sweep")
-                st.caption(
-                    f"Total buy runway (owner + post-sale renter phase); peak {_sup_peak_yrs:.1f} yrs "
-                    f"at {_sup_peak_down:.0f}% down. Capped at 100 yrs; dashed = rent runway; "
-                    f"infeasible cells excluded."
-                )
-            else:
-                st.info("No feasible down payments at the current price and capital.")
