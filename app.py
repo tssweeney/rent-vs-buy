@@ -327,11 +327,12 @@ def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
     return wealth_curve, cashflow_curve, runway_curve
 
 
-def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240):
+def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240, best="min"):
     """Compact line+marker chart for a single down-payment optimization curve.
 
     curve: list of (down_pct_int, value | None)
     Gaps (None values) are excluded; a connected line is drawn through valid points.
+    best: "min" (earlier breakeven is better) or "max" — the optimum gets a gold star.
     """
     xs = [d for d, v in curve if v is not None]
     ys = [v for d, v in curve if v is not None]
@@ -341,13 +342,25 @@ def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240):
         x=xs, y=ys, mode="lines+markers",
         line=dict(width=2),
         marker=dict(size=6),
+        showlegend=False,
         hovertemplate=f"Down %{{x:.0f}}%<br>{hover_label}: %{{y:.1f}} yrs<extra></extra>",
     ))
+    if xs:
+        i = ys.index(min(ys) if best == "min" else max(ys))
+        fig.add_trace(go.Scatter(
+            x=[xs[i]], y=[ys[i]], mode="markers",
+            marker=dict(size=12, symbol="star", color="gold"),
+            name=f"Best: {xs[i]:.0f}% down → {ys[i]:.1f} yrs",
+            hovertemplate=(f"Best {hover_label.lower()}: {ys[i]:.1f} yrs "
+                           f"at {xs[i]:.0f}% down<extra></extra>"),
+        ))
     fig.update_layout(
         height=height,
         margin=dict(l=40, r=20, t=30, b=30),
         hovermode="x unified",
-        showlegend=False,
+        showlegend=bool(xs),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0,
+                    xanchor="left", x=0, font=dict(size=10)),
         xaxis_title="Down payment (%)",
         yaxis_title=yaxis_title,
     )
