@@ -68,6 +68,9 @@ class Assumptions:
     monthly_rent: float = 4_167   # ~$1.4M / 28 / 12, consistent with p2r=28 default
     rent_growth: float = 0.04
 
+    # property-generated income (buy side only)
+    monthly_income: float = 0.0   # e.g. ADU rent; grows with rent_growth; stops at forced sale
+
 
 @dataclass
 class Result:
@@ -83,7 +86,7 @@ class Result:
     net_worth_rent_liq: list  # after cap-gains tax on portfolio
     portfolio_buy_after_tax: list   # portfolio net of cap-gains tax if sold now
     portfolio_rent_after_tax: list
-    outflow_buy: list       # monthly housing outflow, net of tax benefit
+    outflow_buy: list       # monthly housing outflow, net of tax benefit and income
     outflow_rent: list
     interest_paid: list     # cumulative
     principal_paid: list    # cumulative
@@ -98,6 +101,7 @@ class Result:
     hoa_m: list
     pmi_m: list
     tax_benefit_m: list
+    income_m: list          # property income (buy side only; grows with rent_growth)
     contrib_buy_m: list     # surplus invested into the buy-side portfolio
     contrib_rent_m: list    # surplus invested into the rent-side portfolio
 
@@ -135,6 +139,7 @@ def simulate(a: Assumptions) -> Result:
     basis_buy = pf_buy    # cost basis: contributions; gains above this taxed at sale
     basis_rent = pf_rent
     rent = a.monthly_rent
+    income = a.monthly_income   # property income; grows with rent_growth annually
     cum_int = 0.0
     cum_prin = 0.0
 
@@ -162,6 +167,7 @@ def simulate(a: Assumptions) -> Result:
     hoa_v = [0.0]
     pmi_v = [0.0]
     tb_v = [0.0]
+    inc_v = [0.0]
     cb_v = [0.0]
     cr_v = [0.0]
 
@@ -193,7 +199,7 @@ def simulate(a: Assumptions) -> Result:
         insurance = home * a.insurance_rate / 12
         maintenance = home * a.maintenance_rate / 12
         carrying = prop_tax + insurance + maintenance + a.hoa_monthly + pmi
-        outflow_buy = payment + carrying - tax_benefit
+        outflow_buy = payment + carrying - tax_benefit - income
         outflow_rent = rent
 
         # fairness: lower-outflow scenario invests the difference
@@ -213,6 +219,7 @@ def simulate(a: Assumptions) -> Result:
         if m % 12 == 0:
             assessed *= 1 + a.prop_tax_growth
             rent *= 1 + a.rent_growth
+            income *= 1 + a.rent_growth
 
         months.append(m)
         home_v.append(home)
@@ -238,6 +245,7 @@ def simulate(a: Assumptions) -> Result:
         hoa_v.append(a.hoa_monthly)
         pmi_v.append(pmi)
         tb_v.append(tax_benefit)
+        inc_v.append(income)
         cb_v.append(contrib_buy)
         cr_v.append(contrib_rent)
 
@@ -274,6 +282,7 @@ def simulate(a: Assumptions) -> Result:
         hoa_m=hoa_v,
         pmi_m=pmi_v,
         tax_benefit_m=tb_v,
+        income_m=inc_v,
         contrib_buy_m=cb_v,
         contrib_rent_m=cr_v,
     )
@@ -370,6 +379,7 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
     home = a.price
     assessed = a.price
     bal = loan0
+    income = a.monthly_income   # property income; grows with rent_growth; stops at sale
 
     # Rent starting state
     liq_rent = a.capital
@@ -410,71 +420,80 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
             maintenance = home * a.maintenance_rate / 12
 
             # No interest-deduction benefit (no income to deduct against)
-            need_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
+            gross_cost_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
+            # Income offsets the gross cost; need can go <= 0 (portfolio just grows)
+            need_buy = gross_cost_buy - income
         else:
             # Post-sale: buy scenario now rents at the same rent rate the rent scenario uses
+            # Income stops when the house is sold (ADU sells with the house)
             need_buy = rent + extra_monthly
 
         need_rent = rent + extra_monthly
 
-        # Annual steps (rent, assessed value)
+        # Annual steps (rent, assessed value, income)
         if m % 12 == 0:
             if not sold_house:
                 assessed *= 1 + a.prop_tax_growth
+                income *= 1 + a.rent_growth
             rent *= 1 + a.rent_growth
 
         # ---- buy portfolio withdrawal ----
         if depleted_buy_month is None:
             liq_buy *= 1 + g_inv
-            if liq_buy > 0:
-                gain_frac = max(0.0, 1.0 - basis_buy / liq_buy)
-                sell_buy = need_buy / (1.0 - a.cap_gains_rate * gain_frac)
+            if need_buy <= 0:
+                # Income exceeds gross costs — no withdrawal needed; portfolio just grows.
+                # The surplus is NOT deposited (conservative/simple).
+                pass
             else:
-                sell_buy = need_buy
-
-            if sell_buy >= liq_buy and not sold_house:
-                # Owner's cash insufficient — sell the house and become a renter
-                leftover = max(liq_buy, 0.0)
-                proceeds = home * (1.0 - a.selling_cost_pct) - bal
-                # Edge case: proceeds may be negative (underwater), clamp to 0
-                proceeds = max(proceeds, 0.0)
-                total = leftover + proceeds
-                sale_month = m
-                sale_proceeds_val = proceeds
-                sold_house = True
-                bal = 0.0
-
-                # Post-sale need is rent (updated to current market rent)
-                need_buy = rent + extra_monthly
-
-                # Can the combined total cover this month's need as a renter?
-                if total > 0:
-                    gain_frac2 = max(0.0, 1.0 - basis_buy / total) if total > 0 else 0.0
-                    sell_buy2 = need_buy / (1.0 - a.cap_gains_rate * gain_frac2)
+                if liq_buy > 0:
+                    gain_frac = max(0.0, 1.0 - basis_buy / liq_buy)
+                    sell_buy = need_buy / (1.0 - a.cap_gains_rate * gain_frac)
                 else:
-                    sell_buy2 = need_buy
+                    sell_buy = need_buy
 
-                if sell_buy2 >= total:
-                    # Depleted immediately (absurdly rare edge case)
+                if sell_buy >= liq_buy and not sold_house:
+                    # Owner's cash insufficient — sell the house and become a renter
+                    leftover = max(liq_buy, 0.0)
+                    proceeds = home * (1.0 - a.selling_cost_pct) - bal
+                    # Edge case: proceeds may be negative (underwater), clamp to 0
+                    proceeds = max(proceeds, 0.0)
+                    total = leftover + proceeds
+                    sale_month = m
+                    sale_proceeds_val = proceeds
+                    sold_house = True
+                    bal = 0.0
+
+                    # Post-sale need is rent (updated to current market rent)
+                    need_buy = rent + extra_monthly
+
+                    # Can the combined total cover this month's need as a renter?
+                    if total > 0:
+                        gain_frac2 = max(0.0, 1.0 - basis_buy / total) if total > 0 else 0.0
+                        sell_buy2 = need_buy / (1.0 - a.cap_gains_rate * gain_frac2)
+                    else:
+                        sell_buy2 = need_buy
+
+                    if sell_buy2 >= total:
+                        # Depleted immediately (absurdly rare edge case)
+                        liq_buy = 0.0
+                        basis_buy = 0.0
+                        depleted_buy_month = m
+                    else:
+                        # Inject proceeds into portfolio; sale cash is post-tax, add to basis
+                        basis_buy = basis_buy + proceeds  # leftover basis preserved + post-tax proceeds
+                        liq_buy = total
+                        # Withdraw this month's rent need
+                        basis_buy -= basis_buy * (sell_buy2 / liq_buy)
+                        liq_buy -= sell_buy2
+
+                elif sell_buy >= liq_buy and sold_house:
+                    # Already a renter (post-sale phase) — final depletion
+                    depleted_buy_month = m
                     liq_buy = 0.0
                     basis_buy = 0.0
-                    depleted_buy_month = m
                 else:
-                    # Inject proceeds into portfolio; sale cash is post-tax, add to basis
-                    basis_buy = basis_buy + proceeds  # leftover basis preserved + post-tax proceeds
-                    liq_buy = total
-                    # Withdraw this month's rent need
-                    basis_buy -= basis_buy * (sell_buy2 / liq_buy)
-                    liq_buy -= sell_buy2
-
-            elif sell_buy >= liq_buy and sold_house:
-                # Already a renter (post-sale phase) — final depletion
-                depleted_buy_month = m
-                liq_buy = 0.0
-                basis_buy = 0.0
-            else:
-                basis_buy -= basis_buy * (sell_buy / liq_buy)
-                liq_buy -= sell_buy
+                    basis_buy -= basis_buy * (sell_buy / liq_buy)
+                    liq_buy -= sell_buy
 
         # ---- rent portfolio withdrawal ----
         if depleted_rent_month is None:

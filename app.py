@@ -27,6 +27,7 @@ DEFAULTS = {
     "prop_tax": 1.15, "insurance": 0.25, "maintenance": 1.0, "hoa": 250,
     "marginal": 42.0, "deduct": True,
     "p2r": 28.0,
+    "monthly_income": 0,
     # single-scenario tab
     "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 4_167,
     # runway tab
@@ -117,10 +118,19 @@ def monthly_cost_fig(res, yrs, height=340):
                 hovertemplate="%{y:$,.0f}",
             ))
     fig2.add_trace(go.Scatter(
-        x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit)",
+        x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit & income)",
         line=dict(width=2, color="black"),
         hovertemplate="%{y:$,.0f}",
     ))
+    if max(res.income_m[1:]) > 0:
+        # Show income as a dashed negative-side line so users can see its effect
+        _neg_income = [-v for v in res.income_m[1:]]
+        fig2.add_trace(go.Scatter(
+            x=_x, y=_neg_income, name="Income (offsets cost)",
+            line=dict(width=2, dash="dash", color="green"),
+            hovertemplate="Income: %{customdata:$,.0f}",
+            customdata=res.income_m[1:],
+        ))
     fig2.add_trace(go.Scatter(
         x=_x, y=res.outflow_rent[1:], name="Rent",
         line=dict(width=2, dash="dash", color="gray"),
@@ -375,6 +385,12 @@ onetime = st.sidebar.slider("One-time costs ($)", 0, 100_000,
 hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa",
                               help="Monthly homeowners-association dues, if any. Flat — "
                                    "does not grow in this model.")
+monthly_income = st.sidebar.number_input(
+    "Monthly income ($)", 0, 20_000, step=100, key="monthly_income",
+    help="Income the property generates for you as the owner — e.g. ADU or room rent. "
+         "Buy-side only, grows with rent growth, stops at a forced sale. "
+         "Enter net of taxes.",
+)
 derive_rent = st.sidebar.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
                                   help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
                                        "so it tracks the purchase price. Off: type a rent "
@@ -480,6 +496,7 @@ base = Assumptions(
     insurance_rate=insurance, maintenance_rate=maintenance, hoa_monthly=hoa,
     marginal_tax_rate=marginal, include_interest_deduction=deduct,
     rent_growth=rent_growth,
+    monthly_income=monthly_income,
 )
 
 # ---------------------------------------------------------------- main
@@ -719,7 +736,9 @@ with tab0:
             _cf_r1c1.metric("Own cost (mo 1)", fmt(_own_cost_m1_gross), border=True, height=MCH,
                             help="P&I + property tax + insurance + maintenance + HOA + PMI, "
                                  "before the interest deduction (which arrives annually at tax "
-                                 "time and is counted in net worth).")
+                                 "time and is counted in net worth). When monthly income is set, "
+                                 "it is already netted into the 'Own cost (net)' line and flows "
+                                 "through all charts and the net worth calculation.")
             _cf_r1c2.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=MCH,
                             help="Month-1 rent for the comparable home. Grows at the rent-growth "
                                  "rate each year.")
@@ -821,12 +840,14 @@ with tab3:
                    "Each month: interest = balance × r/12; principal = M − interest.")
 
     with f2.container(border=True):
-        st.markdown("**Owner monthly cost, net of tax benefit**")
+        st.markdown("**Owner monthly cost, net of tax benefit and income**")
         st.latex(r"C_{own} = M + tax + ins + maint + HOA + PMI"
-                 r" - \tau_{marg} \cdot i_{\le 750k}")
+                 r" - \tau_{marg} \cdot i_{\le 750k} - income")
         st.caption("i≤750k = month's interest × min(1, 750,000 ÷ balance). Property tax "
                    "uses the Prop-13 assessed value (+2%/yr); insurance and maintenance "
-                   "use current market value; PMI while down < 20% until 78% LTV.")
+                   "use current market value; PMI while down < 20% until 78% LTV. "
+                   "Income (e.g. ADU rent) offsets the owner's outflow; grows with rent "
+                   "growth; enter net of taxes.")
 
     with f1.container(border=True):
         st.markdown("**Fairness rule** — both scenarios spend the same total")
@@ -891,6 +912,7 @@ with tab3:
                 ["+ HOA", fmt(res.hoa_m[1])],
                 ["+ PMI", fmt(res.pmi_m[1])],
                 ["− Interest tax benefit", fmt(res.tax_benefit_m[1])],
+                ["− Income", fmt(res.income_m[1])],
                 ["= Own cost (net)", fmt(res.outflow_buy[1])],
                 ["Rent", fmt(res.outflow_rent[1])],
                 ["Own − rent", f"{'−' if gap < 0 else ''}{fmt(abs(gap))}"],
@@ -936,6 +958,7 @@ with tab3:
         "HOA": res.hoa_m,
         "PMI": res.pmi_m,
         "Interest tax benefit (−)": res.tax_benefit_m,
+        "Income (−)": res.income_m,
         "Own cost (net)": res.outflow_buy,
         # --- the rent alternative
         "Rent": res.outflow_rent,
@@ -959,6 +982,7 @@ with tab3:
 
     FLOWS = ["P&I payment", "  of which interest", "  of which principal", "Property tax",
              "Insurance", "Maintenance", "HOA", "PMI", "Interest tax benefit (−)",
+             "Income (−)",
              "Own cost (net)", "Rent", "Own − rent",
              "Invested → buy portfolio", "Invested → rent portfolio"]
     STOCKS = ["Home value", "Loan balance", "Home equity (if sold)",
@@ -979,8 +1003,11 @@ with tab3:
         "PMI": "Mortgage insurance while down < 20%; drops at 78% of purchase price.",
         "Interest tax benefit (−)": "Marginal rate × deductible interest (≤ 750k of "
                                     "balance); reduces the owner's net cost.",
+        "Income (−)": "Property income (e.g. ADU rent) received by the owner — buy side "
+                      "only. Grows with rent growth annually. Stops at a forced sale. "
+                      "Enter net of taxes.",
         "Own cost (net)": "P&I + property tax + insurance + maintenance + HOA + PMI − "
-                          "interest tax benefit: the owner's true outflow.",
+                          "interest tax benefit − income: the owner's true outflow.",
         "Rent": "Rent for the comparable home; grows at the rent-growth rate yearly.",
         "Own − rent": "Cash-flow gap between the two lifestyles; the cheaper side "
                       "invests this difference.",
@@ -1037,7 +1064,7 @@ with tab3:
   Home value = purchase price; Loan balance = price − down payment; Home equity already
   reflects the selling-cost haircut.
 - **Own cost (net)** = P&I + property tax + insurance + maintenance + HOA + PMI − interest
-  tax benefit. This is the owner's true monthly outflow.
+  tax benefit − income. This is the owner's true monthly outflow.
 - **Own − rent** is the cash-flow gap between the two lifestyles. Whichever side is cheaper
   invests that gap: positive → **Invested → rent portfolio** (renting is cheaper that month),
   negative → **Invested → buy portfolio**. Both scenarios spend identical total dollars.
@@ -1069,6 +1096,9 @@ with tab3:
 - **Home sale:** "if sold" subtracts selling costs but **not** capital-gains tax on the home
   (§121 excludes the first \\$250k single / \\$500k married of gain; big appreciation beyond
   that is untaxed in this model, which flatters buying slightly).
+- **Monthly income:** Buy-side only (e.g. ADU or room rent). Grows with the rent-growth
+  rate each year. Stops at a forced sale (the ADU sells with the house). Enter net of
+  taxes — tax on rental income is not modeled here.
 - All figures are **nominal** dollars.
 """)
 
@@ -1261,6 +1291,8 @@ SWEEP_PARAMS = {p.key: p for p in [
                lambda v: v / 100, _lin_axis(0, 45), _pct),
     SweepParam("extra_spend", "Extra monthly spending ($)", None, None,
                _dollar_axis(0, 20_000, 0), fmt),
+    SweepParam("monthly_income", "Monthly income ($)", "monthly_income", float,
+               _dollar_axis(0, 5_000, monthly_income), fmt),
 ]}
 
 
