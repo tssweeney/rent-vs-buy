@@ -1359,7 +1359,7 @@ def _fmt_runway(v):
 FIXED_METRICS = [
     ("buy_adv",     "Buy advantage ($, maximize)",         "max", fmt,        "$,.0f", "RdBu",    0.0),
     ("breakeven",   "Breakeven (yrs, minimize)",            "min", _fmt_years, ".1f",   "Viridis", None),
-    ("monthly_cost","Net monthly cost yr 1 ($, minimize)",  "min", fmt,        "$,.0f", "Viridis", None),
+    ("monthly_cost","Monthly cost, mo 1 ($, minimize)",     "min", fmt,        "$,.0f", "Viridis", None),
     ("buy_runway",  "Total buy runway (yrs, maximize)",     "max", _fmt_runway,".1f",   "Viridis", None),
 ]
 # Index by key for convenient lookup
@@ -1416,7 +1416,8 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
             grids["buy_adv"][i, j] = r.net_worth_buy_liq[-1] - r.net_worth_rent_liq[-1]
             be = r.breakeven_month
             grids["breakeven"][i, j] = be / 12 if be > 0 else math.nan
-            grids["monthly_cost"][i, j] = (r.outflow_buy[1]
+            # gross owner cost (before the interest deduction), same as the Overview
+            grids["monthly_cost"][i, j] = (r.outflow_buy[1] + r.tax_benefit_m[1]
                                            if len(r.outflow_buy) > 1 else math.nan)
 
             # --- single runway() call ---
@@ -1478,7 +1479,7 @@ with tab2:
                 fig.update_layout(height=400, margin=dict(l=70, r=20, t=10, b=40),
                                   xaxis_title=_mdsafe(xp.label),
                                   yaxis_title=_mdsafe(yp.label))
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig)
 
             with right.container(border=True):
                 verb = "maximizing" if m_dir == "max" else "minimizing"
