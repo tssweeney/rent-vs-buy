@@ -8,5 +8,14 @@ dependencies = [
     "plotly>=5.20",
     "pandas>=2.0",
     "numpy>=1.26",
-    "pyarrow<25",
+    "pyarrow!=25.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

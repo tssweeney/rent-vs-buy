@@ -248,7 +248,8 @@ def simulate(a: Assumptions) -> Result:
         insurance = home * a.insurance_rate / 12
         maintenance = home * a.maintenance_rate / 12
         carrying = prop_tax + insurance + maintenance + a.hoa_monthly + pmi
-        outflow_buy = payment + carrying - tax_benefit - income
+        income_m = income   # this month's income (before any year-end growth)
+        outflow_buy = payment + carrying - tax_benefit - income_m
         outflow_rent = rent
 
         # fairness: lower-outflow scenario invests the difference
@@ -296,7 +297,7 @@ def simulate(a: Assumptions) -> Result:
         hoa_v.append(a.hoa_monthly)
         pmi_v.append(pmi)
         tb_v.append(tax_benefit)
-        inc_v.append(income)
+        inc_v.append(income_m)
         cb_v.append(contrib_buy)
         cr_v.append(contrib_rent)
 
