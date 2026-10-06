@@ -45,7 +45,6 @@ class Assumptions:
     investment_tax_drag: float = 0.0     # annual drag: dividends/turnover taxed yearly
     cap_gains_rate: float = 0.25         # tax on unrealized gains (portfolio and home) when sold
     home_gain_exclusion: float = 250_000  # Sec. 121: 250k single / 500k married (after 24 months)
-    inflation: float = 0.025
 
     # purchase
     price: float = 1_400_000

@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import (Assumptions, simulate, rent_from_price, runway, RunwayResult,
+from model import (Assumptions, simulate, rent_from_price, runway,
                    cashflow_breakeven_month)
 
 st.set_page_config(page_title="Rent vs. Buy", page_icon=":material/home_work:",
@@ -29,9 +29,7 @@ DEFAULTS = {
     "marginal": 42.0, "deduct": True, "filing_status": "Single",
     "p2r": 28.0,
     "monthly_income": 0,
-    # single-scenario tab
     "price": 1_400_000, "down_pct": 50, "derive_rent": True, "rent0": 4_167,
-    # runway tab
     # scenario explorer tab
     "sweep_x": "price", "sweep_y": "down_pct",
 }
@@ -64,8 +62,7 @@ def compact(fig, height=340, legend=True, **layout):
 
 # ---------------------------------------------------------------- chart helpers
 # Each helper builds a Plotly Figure from simulation results; callers pass a
-# unique key= to st.plotly_chart so the same figure can appear in multiple tabs
-# without triggering duplicate-element-ID errors.
+# unique key= to st.plotly_chart to avoid duplicate-element-ID errors.
 
 def networth_fig(res, yrs, height=340):
     """Net worth over time: buy (if sold & mark-to-market) vs rent."""
@@ -262,25 +259,6 @@ def runway_sweep_fig(sweep_data, rent_runway_months, height=320):
     return compact(fig_sweep, height=height,
                    xaxis_title="Down payment (%)",
                    yaxis_title="Buy runway (years)"), peak_down, peak_yrs
-
-
-# ---------------------------------------------------------------- cached runway sweep (module scope)
-@st.cache_data(show_spinner="Computing runway sweep...")
-def _runway_sweep(base_a: Assumptions, price_v: float, rent_v: float):
-    downs_sweep = [d / 100 for d in range(0, 101, 5)]
-    results = []
-    for d in downs_sweep:
-        upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
-        if upfront_d > base_a.capital:
-            results.append((d * 100, None))
-            continue
-        a_d = replace(base_a, price=price_v, down_pct=d,
-                      monthly_rent=rent_v)
-        rr = runway(a_d)
-        buy_yrs = (rr.depleted_buy_month / 12
-                   if rr.depleted_buy_month is not None else 100.0)
-        results.append((d * 100, min(buy_yrs, 100.0)))
-    return results
 
 
 @st.cache_data(show_spinner="Computing down-payment optimization curves...")
@@ -522,100 +500,38 @@ base = Assumptions(
     monthly_income=monthly_income,
 )
 
+# ---------------------------------------------------------------- shared scenario
+# The sidebar scenario, simulated once at module scope; every tab reads these.
+a = replace(base, price=price, down_pct=down_pct, monthly_rent=rent0)
+res = simulate(a)
+rwy = runway(a)
+down = price * down_pct
+upfront = down + price * closing_pct + onetime
+
+_yrs = np.array(res.months) / 12
+MCH = 115   # uniform metric-card height (Overview and Charts tabs)
+_tax_benefit_m1 = res.tax_benefit_m[1]
+_principal_m1 = res.principal_m[1]
+_burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
+_burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
+
+
+def _runway_label(depleted_month, max_years=100):
+    if depleted_month is None:
+        return f"{max_years}+ yrs"
+    return f"{depleted_month / 12:.1f} yrs"
+
+
 # ---------------------------------------------------------------- main
 st.subheader("Rent vs. Buy")
 
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Overview", "Single scenario", "Scenario Explorer", "Calculations", "Runway", "Charts"])
+tab_overview, tab_explorer, tab_calc, tab_charts = st.tabs(
+    ["Overview", "Scenario Explorer", "Calculations", "Charts"])
 
-# ================================================================ tab 1
-with tab1:
-    a = replace(base, price=price, down_pct=down_pct, monthly_rent=rent0)
-    res = simulate(a)
-
-    down = price * down_pct
-    upfront = down + price * closing_pct + onetime
+# ================================================================ Overview
+with tab_overview:
     if not res.feasible:
-        st.error(f"Infeasible: upfront cash needed ({fmtm(upfront)}) exceeds capital ({fmtm(capital)}).")
-    else:
-        nw_buy = res.net_worth_buy_liq[-1]
-        nw_rent = res.net_worth_rent_liq[-1]
-        delta = nw_buy - nw_rent
-
-        MH = 150  # uniform metric-card height across both rows
-        r1 = st.columns(4)
-        r1[0].metric(f"Buy net worth (yr {horizon})", fmt(nw_buy), border=True, height=MH,
-                     help="After-tax portfolio + home value net of selling costs − loan "
-                          "balance − home-sale tax")
-        r1[1].metric(f"Rent net worth (yr {horizon})", fmt(nw_rent), border=True, height=MH,
-                     help="Portfolio net of capital-gains tax if sold")
-        r1[2].metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
-                     border=True, height=MH,
-                     help="Buy net worth minus rent net worth at the horizon, both after "
-                          "taxes and selling costs. Positive = buying wins.")
-        if res.breakeven_month > 0:
-            r1[3].metric("Net worth breakeven", f"year {res.breakeven_month / 12:.1f}",
-                         border=True, height=MH,
-                         help="First month from which buying (after selling costs and taxes) "
-                              "stays ahead of renting through the horizon")
-        else:
-            r1[3].metric("Net worth breakeven", "never (in horizon)", border=True, height=MH,
-                         help="Buying never catches renting within the horizon; extend the "
-                              "horizon or change assumptions to see where it would.")
-
-        r2 = st.columns(4)
-        r2[0].metric("Cash at closing", fmt(upfront), border=True, height=MH,
-                     help="Down payment + closing costs + one-time costs — leaves your "
-                          "capital on day one")
-        r2[1].metric("Reserve after closing", fmt(capital - upfront), border=True, height=MH,
-                     help="Capital left invested after closing — your emergency cushion in "
-                          "the buy scenario")
-        r2[2].metric("Net monthly cost (yr 1)", fmt(res.outflow_buy[1]), border=True, height=MH,
-                     help="P&I + taxes/insurance/maintenance/HOA/PMI − interest-deduction benefit")
-        r2[3].metric("vs. rent (mo 1)", fmt(res.outflow_buy[1] - res.outflow_rent[1]),
-                     delta="buy costs more/mo" if res.outflow_buy[1] > res.outflow_rent[1]
-                     else "buy costs less/mo",
-                     delta_color="off", border=True, height=MH,
-                     help="Owner's net monthly cost minus rent in month 1. Whichever side is "
-                          "cheaper invests this difference every month.")
-
-        yrs = np.array(res.months) / 12
-
-        r1c1, r1c2 = st.columns(2)
-        with r1c1.container(border=True):
-            st.markdown("**Net worth over time**")
-            st.plotly_chart(networth_fig(res, yrs), key="ss_networth")
-            st.caption("Solid = if sold today (after selling costs, home-sale tax and "
-                       "portfolio cap-gains tax); "
-                       "dotted = mark-to-market.")
-
-        with r1c2.container(border=True):
-            st.markdown("**Buy net worth composition**")
-            st.plotly_chart(networth_composition_fig(res, yrs, selling_pct), key="ss_networth_comp")
-            st.caption("Bands sum to the buy 'if sold' line; home equity is only "
-                       "accessible by selling or borrowing.")
-
-        r2c1, r2c2 = st.columns(2)
-        with r2c1.container(border=True):
-            st.markdown("**Monthly owner cost breakdown**")
-            st.plotly_chart(monthly_cost_fig(res, yrs), key="ss_monthly_cost")
-            st.caption("Bands stack to gross cost; the net line subtracts the interest "
-                       "deduction. Principal builds equity — cash out, but not lost.")
-
-        with r2c2.container(border=True):
-            st.markdown("**Sensitivity: buy advantage vs. investment return**")
-            st.plotly_chart(sensitivity_fig(a, alt_return, horizon), key="ss_sensitivity")
-            st.caption("Zero crossing = investment return at which renting starts to win.")
-
-# ================================================================ Hoist runway computation
-# Computed once here (after `a` and `res` are ready) so both the Overview tab and
-# the Runway tab can share the same result.
-rwy = runway(a)
-
-# ================================================================ tab 0 (Overview)
-with tab0:
-    if not res.feasible:
-        st.error(f"Infeasible: upfront cash needed ({fmtm(price * down_pct + price * closing_pct + onetime)}) "
+        st.error(f"Infeasible: upfront cash needed ({fmtm(upfront)}) "
                  f"exceeds capital ({fmtm(capital)}).")
     else:
         # ---- Hero grid: 3-category summary (Wealth / Cash flow / Retirement) ----
@@ -661,36 +577,21 @@ with tab0:
             _runway_adv_delta_color = "normal" if _runway_adv_yrs > 0 else "inverse"
 
         # ================================================================ Overview — unified single-screen columns
-        _ov_upfront = down + price * closing_pct + onetime
-        MCH = 115   # uniform card height for all 18 metric cards (hero + supplementary)
         _W_CHART_H = 380   # Wealth chart height
         _CF_CHART_H = 380  # Cash flow chart height
         _RT_CHART_H = 380  # Retirement chart height
         _OPT_H = 240       # optimization sub-chart height
-
-        _yrs = np.array(res.months) / 12
 
         # Down-payment sweep for per-category optimization charts
         _dp_wealth_curve, _dp_cashflow_curve, _dp_runway_curve = _down_pct_sweep(base, price, rent0)
 
         # Cash flow derived values
         _own_cost_m1_gross = res.outflow_buy[1] + res.tax_benefit_m[1]  # gross: add back the deduction
-        _own_cost_m1 = res.outflow_buy[1]  # net (kept for other uses)
         _rent_m1 = res.outflow_rent[1]
-        _tax_benefit_m1 = res.tax_benefit_m[1]
-        _principal_m1 = res.principal_m[1]
-        _cost_diff_gross = _own_cost_m1_gross - _rent_m1
 
         # Retirement derived values
-        def _runway_label(depleted_month, max_years=100):
-            if depleted_month is None:
-                return f"{max_years}+ yrs"
-            return f"{depleted_month / 12:.1f} yrs"
-
         _buy_label = _runway_label(rwy.depleted_buy_month)
         _rent_label = _runway_label(rwy.depleted_rent_month)
-        _burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
-        _burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
 
         ov_col_w, ov_col_cf, ov_col_rt = st.columns(3, gap="medium")
 
@@ -853,8 +754,8 @@ with tab0:
                 else:
                     st.info("No feasible down payments at the current price and capital.")
 
-# ================================================================ tab 3 (Calculations)
-with tab3:
+# ================================================================ Calculations
+with tab_calc:
     st.caption("Every figure is produced by a month-by-month simulation; the formulas, "
                "worked examples, and raw data below all reconcile with each other.")
 
@@ -912,7 +813,7 @@ with tab3:
     # ---- Section 2: Worked example ----
     st.subheader("Worked example at current inputs")
     if not res.feasible:
-        st.warning("The single-scenario inputs are infeasible (upfront cash exceeds "
+        st.warning("The sidebar inputs are infeasible (upfront cash exceeds "
                    "capital), so there is no worked example. Lower the price or down "
                    "payment.")
     else:
@@ -1151,105 +1052,7 @@ with tab3:
 - All figures are **nominal** dollars.
 """)
 
-# ================================================================ tab 4 (Runway)
-with tab4:
-    st.caption(
-        "Assumes you retire today with no income and pay all housing costs "
-        "out of your liquid investment portfolio. "
-        "Two modeling choices: (1) no mortgage-interest deduction — no income "
-        "to deduct against; (2) each withdrawal is grossed up for the embedded "
-        "capital-gains tax on portfolio gains, so you sell more shares than you "
-        "actually spend. "
-        "When the owner's cash runs out, the house is sold (net of selling costs, "
-        "loan repaid, capital-gains tax paid on gain above the §121 exclusion) and "
-        "the after-tax proceeds fund "
-        "renting the comparable home at then-current market rent."
-    )
-
-    def _runway_label(depleted_month, max_years=100):
-        if depleted_month is None:
-            return f"{max_years}+ yrs"
-        return f"{depleted_month / 12:.1f} yrs"
-
-    buy_label = _runway_label(rwy.depleted_buy_month)
-    rent_label = _runway_label(rwy.depleted_rent_month)
-
-    # Sale info
-    sale_yr_label = f"yr {rwy.sale_month / 12:.1f}" if rwy.sale_month is not None else "never"
-    sale_proc_label = fmtm(rwy.sale_proceeds) if rwy.sale_proceeds is not None else "—"
-
-    # Month-1 burn rates (index 1 in the series)
-    burn_buy_m1 = rwy.monthly_need_buy[1] if len(rwy.monthly_need_buy) > 1 else 0.0
-    burn_rent_m1 = rwy.monthly_need_rent[1] if len(rwy.monthly_need_rent) > 1 else 0.0
-
-    RMH = 130  # uniform runway metric-card height
-    rw = st.columns(6)
-    rw[0].metric("Forced sale", sale_yr_label, border=True, height=RMH,
-                 help="Year the owner's liquid portfolio runs dry and the house is "
-                      "force-sold. 'never' means the portfolio sustains ownership "
-                      "costs indefinitely (no sale ever needed).")
-    rw[1].metric("Sale proceeds", sale_proc_label, border=True, height=RMH,
-                 help="Net cash from the forced sale, after home-sale tax: home "
-                      "value × (1 − selling costs) − remaining loan balance − "
-                      "capital-gains tax on gain above the §121 exclusion. Injected "
-                      "into the liquid portfolio to fund renting.")
-    rw[2].metric("Total buy runway", buy_label, border=True, height=RMH,
-                 help="How long the buy scenario's combined portfolio lasts — first "
-                      "as an owner, then (after the forced sale) as a renter at "
-                      "then-current market rent. '100+ yrs' = sustainable over the "
-                      "full simulation horizon.")
-    rw[3].metric("Rent runway", rent_label, border=True, height=RMH,
-                 help="How long the renter's portfolio (all investable capital) "
-                      "lasts paying rent. '100+ yrs' = "
-                      "sustainable withdrawal rate over 100 years.")
-    rw[4].metric("Buy burn (mo 1)", fmt(burn_buy_m1), border=True, height=RMH,
-                 help="Owner's total month-1 outflow: P&I + property tax + "
-                      "insurance + maintenance + HOA + PMI. "
-                      "No interest-deduction benefit (no income).")
-    rw[5].metric("Rent burn (mo 1)", fmt(burn_rent_m1), border=True, height=RMH,
-                 help="Renter's month-1 outflow: the rent payment.")
-
-    # ---- Chart 1: liquid portfolio over time ----
-    _fig_rwy_tab, _cutoff_m_tab = liquid_portfolio_fig(rwy, fmt)
-    with st.container(border=True):
-        st.markdown("**Liquid portfolio over time**")
-        st.plotly_chart(_fig_rwy_tab, key="rwy_liquid_portfolio")
-        sale_note = (
-            f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
-            f"after-tax proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
-            if rwy.sale_month is not None else ""
-        )
-        st.caption(
-            "Each portfolio is drawn down by its own housing costs "
-            "with no income. Growth continues until the portfolio hits zero. "
-            "Buy starts with less cash (down payment + closing already spent) "
-            "but may have lower ongoing costs depending on loan size." + sale_note
-        )
-
-    # ---- Chart 2: runway vs down payment % ----
-    with st.container(border=True):
-        st.markdown("**Runway vs. down payment at current price**")
-
-        sweep_data = _runway_sweep(base, price, rent0)
-        valid = [(d, y) for d, y in sweep_data if y is not None]
-
-        if valid:
-            _fig_sweep_tab, _peak_down_tab, _peak_yrs_tab = runway_sweep_fig(
-                sweep_data, rwy.depleted_rent_month)
-            st.plotly_chart(_fig_sweep_tab, key="rwy_runway_sweep")
-            st.caption(
-                f"Total buy runway: owner phase + post-sale renter phase (house sold when "
-                f"owner cash runs out, proceeds fund renting at then-current market rent). "
-                f"Peak buy runway ({_peak_yrs_tab:.1f} yrs) at {_peak_down_tab:.0f}% down. "
-                f"With the sale phase included, large down payments are less penalised "
-                f"because the equity is returned at sale. "
-                f"Capped at 100 yrs. Dashed line = rent runway. "
-                f"Infeasible cells (upfront > capital) are excluded."
-            )
-        else:
-            st.info("No feasible down payments at the current price and capital.")
-
-# ================================================================ tab 2 (Scenario Explorer)
+# ================================================================ Scenario Explorer
 # ---- registries: sweepable inputs and output metrics -------------
 
 
@@ -1339,8 +1142,6 @@ SWEEP_PARAMS = {p.key: p for p in [
                lambda v: v / 100, _lin_axis(0, 50), _pct),
     SweepParam("cap_gains", "Capital gains at sale (%)", "cap_gains_rate",
                lambda v: v / 100, _lin_axis(0, 45), _pct),
-    SweepParam("extra_spend", "Extra monthly spending ($)", None, None,
-               _dollar_axis(0, 20_000, 0), fmt),
     SweepParam("monthly_income", "Monthly income ($)", "monthly_income", float,
                _dollar_axis(0, 5_000, monthly_income), fmt),
 ]}
@@ -1366,32 +1167,29 @@ FIXED_METRICS = [
 FIXED_METRIC_KEYS = [m[0] for m in FIXED_METRICS]
 
 
-def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, extra):
-    """Assumptions for one grid cell: the sidebar base with the two swept fields
-    overridden. If price or the price-to-rent ratio is swept, the cell's rent is
-    re-derived as price ÷ ratio ÷ 12 (same convention as the price × down payment
-    scenario explorer tab); otherwise the tab-1 rent is kept."""
+def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio):
+    """Assumptions for one grid cell: the sidebar scenario with the two swept
+    fields overridden. If price or the price-to-rent ratio is swept, the cell's
+    rent is re-derived as price ÷ ratio ÷ 12 (same convention as the sidebar's
+    derived rent); otherwise the sidebar scenario's rent is kept."""
     overrides = {}
     price_v, ratio_v, derive = base_a.price, ratio, False
-    extra_m = float(extra)
     for key, val in ((x_key, xv), (y_key, yv)):
         p = SWEEP_PARAMS[key]
         if key == "price":
             price_v, derive = float(val), True
         elif key == "p2r":
             ratio_v, derive = float(val), True
-        elif key == "extra_spend":
-            extra_m = float(val)
         if p.field is not None:
             overrides[p.field] = p.to_field(val)
     if derive:
         overrides["monthly_rent"] = rent_from_price(price_v, ratio_v)
-    return replace(base_a, **overrides), extra_m
+    return replace(base_a, **overrides)
 
 
 @st.cache_data(show_spinner="Running custom sweep...")
 def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
-                     x_vals: tuple, y_vals: tuple, ratio: float, extra: float):
+                     x_vals: tuple, y_vals: tuple, ratio: float):
     """All-metrics grid over y_vals × x_vals (rows = Y). One simulate() + one runway()
     call per cell; unaffordable cells stay NaN across all metric grids.
 
@@ -1403,8 +1201,7 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
 
     for i, yv in enumerate(y_vals):
         for j, xv in enumerate(x_vals):
-            cell_a, cell_extra = _cell_assumptions(base_a, x_key, xv, y_key, yv,
-                                                   ratio, extra)
+            cell_a = _cell_assumptions(base_a, x_key, xv, y_key, yv, ratio)
             upfront_c = (cell_a.price * cell_a.down_pct
                          + cell_a.price * cell_a.closing_buy_pct
                          + cell_a.other_onetime_costs)
@@ -1421,7 +1218,7 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
                                            if len(r.outflow_buy) > 1 else math.nan)
 
             # --- single runway() call ---
-            rr = runway(cell_a, extra_monthly=cell_extra)
+            rr = runway(cell_a)
             grids["buy_runway"][i, j] = (
                 min(rr.depleted_buy_month / 12, 100.0)
                 if rr.depleted_buy_month is not None else 100.0
@@ -1430,7 +1227,7 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
     return grids
 
 
-with tab2:
+with tab_explorer:
     st.caption("Ranges are automatic — full natural range for bounded inputs, 2× the "
                "current value for open-ended dollar inputs. Rent scales with price via "
                "the price-to-rent ratio; blank cells are unaffordable.")
@@ -1453,8 +1250,7 @@ with tab2:
         xp, yp = SWEEP_PARAMS[x_key], SWEEP_PARAMS[y_key]
         x_vals, y_vals = xp.values, yp.values
 
-        grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals,
-                                 p2r, 0.0)
+        grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals, p2r)
 
         x_labels = [xp.fmt(v) for v in x_vals]
         y_labels = [yp.fmt(v) for v in y_vals]
@@ -1513,12 +1309,12 @@ with tab2:
                     st.warning("Every cell is either unaffordable or has no defined "
                                "value for this metric.")
 
-# ================================================================ tab 5 (Charts)
-with tab5:
+# ================================================================ Charts
+with tab_charts:
     st.caption("Supplementary views for the scenario configured in the sidebar.")
 
     if not res.feasible:
-        st.error(f"Infeasible: upfront cash needed ({fmtm(price * down_pct + price * closing_pct + onetime)}) "
+        st.error(f"Infeasible: upfront cash needed ({fmtm(upfront)}) "
                  f"exceeds capital ({fmtm(capital)}).")
     else:
         # ---- Moved cards band: six secondary cards from Overview ----
@@ -1527,9 +1323,9 @@ with tab5:
         with _ch_col_w:
             st.markdown("**Wealth**")
             _ch_w1, _ch_w2 = st.columns(2, gap="small")
-            _ch_w1.metric("Cash at closing", fmt(_ov_upfront), border=True, height=MCH,
+            _ch_w1.metric("Cash at closing", fmt(upfront), border=True, height=MCH,
                           help="Down payment + closing costs + one-time costs — leaves your capital on day one")
-            _ch_w2.metric("Reserve after closing", fmt(capital - _ov_upfront), border=True, height=MCH,
+            _ch_w2.metric("Reserve after closing", fmt(capital - upfront), border=True, height=MCH,
                           help="Capital left invested after closing — your emergency cushion in the buy scenario")
 
         with _ch_col_cf:
