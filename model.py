@@ -20,9 +20,14 @@ Simplifications (documented in the app):
   Assumes you itemize regardless (reasonable at CA incomes with SALT).
 - Property tax assessed value grows at the Prop 13 cap, independent of market
   value.
-- "Liquidation" net worth subtracts selling costs on the home but does not
-  model capital-gains tax on the home sale (§121 exclusion ignores the first
-  $250k/$500k of gain anyway).
+- "Liquidation" net worth subtracts selling costs on the home AND capital-gains
+  tax on the home sale. Home cost basis = price + buy closing costs (one-time /
+  moving costs are not basis). Gain = value x (1 - selling costs) - basis. The
+  Sec. 121 exclusion ($250k single / $500k married, `home_gain_exclusion`)
+  applies only once the home has been owned and used for >= 24 months; before
+  that the exclusion is zero (partial / hardship exclusions are ignored). Tax =
+  max(0, gain - exclusion) x cap_gains_rate (same rate as the portfolio).
+  Mark-to-market net worth stays untaxed.
 """
 
 from dataclasses import dataclass, field, replace
@@ -38,7 +43,8 @@ class Assumptions:
     # markets
     alt_return_annual: float = 0.035     # nominal pre-tax return on investments
     investment_tax_drag: float = 0.0     # annual drag: dividends/turnover taxed yearly
-    cap_gains_rate: float = 0.25         # tax on unrealized gains when portfolio is sold
+    cap_gains_rate: float = 0.25         # tax on unrealized gains (portfolio and home) when sold
+    home_gain_exclusion: float = 250_000  # Sec. 121: 250k single / 500k married (after 24 months)
     inflation: float = 0.025
 
     # purchase
@@ -81,16 +87,17 @@ class Result:
     portfolio_buy: list
     portfolio_rent: list
     net_worth_buy: list     # mark-to-market: portfolio + home - balance
-    net_worth_buy_liq: list # after home selling costs + cap-gains tax on portfolio
+    net_worth_buy_liq: list # after home selling costs, home-sale tax + cap-gains tax on portfolio
     net_worth_rent: list    # mark-to-market portfolio value
     net_worth_rent_liq: list  # after cap-gains tax on portfolio
     portfolio_buy_after_tax: list   # portfolio net of cap-gains tax if sold now
     portfolio_rent_after_tax: list
+    home_sale_tax: list     # cap-gains tax on the home if sold this month (after Sec. 121)
     outflow_buy: list       # monthly housing outflow, net of tax benefit and income
     outflow_rent: list
     interest_paid: list     # cumulative
     principal_paid: list    # cumulative
-    breakeven_month: int    # first month buy (liq) >= rent and stays relevant; -1 if never
+    breakeven_month: int    # first month buy (liq) >= rent and stays ahead to the horizon; -1 if never
     # monthly components (index 0 is the closing month, all zeros)
     payment_m: list         # P&I
     interest_m: list
@@ -114,6 +121,23 @@ def monthly_payment(loan: float, annual_rate: float, years: int) -> float:
     if r == 0:
         return loan / n
     return loan * r / (1 - (1 + r) ** -n)
+
+
+MONTHS_FOR_121 = 24   # Sec. 121 ownership + use test (2 of the last 5 years)
+
+
+def home_basis(a: Assumptions) -> float:
+    """Home cost basis: purchase price + buy-side closing costs."""
+    return a.price * (1 + a.closing_buy_pct)
+
+
+def home_sale_tax(a: Assumptions, home_value: float, months_held: int) -> float:
+    """Capital-gains tax owed if the home is sold for `home_value` after
+    `months_held` months. Sec. 121 exclusion applies only at >= 24 months
+    (partial exclusions ignored)."""
+    gain = home_value * (1 - a.selling_cost_pct) - home_basis(a)
+    exclusion = a.home_gain_exclusion if months_held >= MONTHS_FOR_121 else 0.0
+    return max(0.0, gain - exclusion) * a.cap_gains_rate
 
 
 def simulate(a: Assumptions) -> Result:
@@ -149,7 +173,9 @@ def simulate(a: Assumptions) -> Result:
     pfb_v = [pf_buy]
     pfr_v = [pf_rent]
     nwb_v = [pf_buy + home - bal]
-    nwbl_v = [pf_buy + home * (1 - a.selling_cost_pct) - bal]
+    hst0 = home_sale_tax(a, home, 0)
+    hst_v = [hst0]
+    nwbl_v = [pf_buy + home * (1 - a.selling_cost_pct) - bal - hst0]
     nwr_v = [pf_rent]
     nwrl_v = [pf_rent]
     pbat_v = [pf_buy]
@@ -227,7 +253,9 @@ def simulate(a: Assumptions) -> Result:
         pfb_v.append(pf_buy)
         pfr_v.append(pf_rent)
         nwb_v.append(pf_buy + home - bal)
-        nwbl_v.append(pf_buy_at + home * (1 - a.selling_cost_pct) - bal)
+        hst = home_sale_tax(a, home, m)
+        hst_v.append(hst)
+        nwbl_v.append(pf_buy_at + home * (1 - a.selling_cost_pct) - bal - hst)
         nwr_v.append(pf_rent)
         nwrl_v.append(pf_rent_at)
         pbat_v.append(pf_buy_at)
@@ -268,6 +296,7 @@ def simulate(a: Assumptions) -> Result:
         net_worth_rent_liq=nwrl_v,
         portfolio_buy_after_tax=pbat_v,
         portfolio_rent_after_tax=prat_v,
+        home_sale_tax=hst_v,
         outflow_buy=ob_v,
         outflow_rent=or_v,
         interest_paid=ci_v,
@@ -304,16 +333,16 @@ class RunwayResult:
     Buy scenario sell-and-rent phase:
         When the buy-side liquid portfolio can no longer cover the month's
         housing need as an owner, the house is sold.  Sale proceeds
-        (home_value × (1 − selling_cost_pct) − loan_balance) are injected
-        into the liquid portfolio and the owner becomes a renter at the
-        then-current market rent.  Home-sale capital gains are NOT modeled
-        (§121 exclusion covers a large portion; consistent with the rest of
-        the app).  The runway clock continues until this combined portfolio
-        also depletes.
+        (home_value × (1 − selling_cost_pct) − loan_balance − home-sale tax)
+        are injected into the liquid portfolio and the owner becomes a renter
+        at the then-current market rent.  Home-sale tax uses the same rule as
+        simulate(): gain above basis (price + closing costs), less the Sec. 121
+        exclusion if months held (= sale_month) >= 24, times cap_gains_rate.
+        The runway clock continues until this combined portfolio also depletes.
 
     sale_month: month the house was sold (None if the owner never ran out
         of cash while owning).
-    sale_proceeds: net proceeds added to the portfolio at sale_month (None
+    sale_proceeds: net after-tax proceeds added to the portfolio at sale_month (None
         if sale_month is None).
     depleted_buy_month: FINAL depletion month (after the rent phase), or
         None if the portfolio survives all of max_years.
@@ -454,7 +483,8 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
                 if sell_buy >= liq_buy and not sold_house:
                     # Owner's cash insufficient — sell the house and become a renter
                     leftover = max(liq_buy, 0.0)
-                    proceeds = home * (1.0 - a.selling_cost_pct) - bal
+                    proceeds = (home * (1.0 - a.selling_cost_pct) - bal
+                                - home_sale_tax(a, home, m))
                     # Edge case: proceeds may be negative (underwater), clamp to 0
                     proceeds = max(proceeds, 0.0)
                     total = leftover + proceeds

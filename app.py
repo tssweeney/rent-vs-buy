@@ -25,7 +25,7 @@ DEFAULTS = {
     "mort_rate": 6.5, "term": 30,
     "closing_pct": 1.5, "onetime": 10_000, "selling_pct": 6.0,
     "prop_tax": 1.15, "insurance": 0.25, "maintenance": 1.0, "hoa": 250,
-    "marginal": 42.0, "deduct": True,
+    "marginal": 42.0, "deduct": True, "filing_status": "Single",
     "p2r": 28.0,
     "monthly_income": 0,
     # single-scenario tab
@@ -81,15 +81,18 @@ def networth_fig(res, yrs, height=340):
 
 
 def networth_composition_fig(res, yrs, selling_pct):
-    """Buy net worth stacked: investments + home equity vs rent line."""
-    equity_liq = [h * (1 - selling_pct) - b
-                  for h, b in zip(res.home_value, res.loan_balance)]
+    """Buy net worth stacked: investments + home equity vs rent line.
+
+    Equity is after selling costs AND home-sale tax, so the bands sum to the
+    buy 'if sold' line."""
+    equity_liq = [h * (1 - selling_pct) - b - t
+                  for h, b, t in zip(res.home_value, res.loan_balance, res.home_sale_tax)]
     figc = go.Figure()
     figc.add_trace(go.Scatter(x=yrs, y=res.portfolio_buy_after_tax,
                               name="Investments (after tax)",
                               stackgroup="buy", line=dict(width=0.5)))
     figc.add_trace(go.Scatter(x=yrs, y=equity_liq,
-                              name="Home equity (net)",
+                              name="Home equity (after selling costs & tax)",
                               stackgroup="buy", line=dict(width=0.5)))
     figc.add_trace(go.Scatter(x=yrs, y=res.net_worth_rent_liq,
                               name="Rent (after tax)",
@@ -480,11 +483,19 @@ st.sidebar.subheader("Personal")
 horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon",
                             help="When the two scenarios are compared: both are valued "
                                  "'if sold' at this point.")
+filing_status = st.sidebar.segmented_control(
+    "Filing status", ["Single", "Married"], key="filing_status",
+    help="Sets the §121 home-sale exclusion: the first \\$250k (single) / \\$500k "
+         "(married filing jointly) of gain on your home is tax-free once you've owned "
+         "and lived in it for 2 years. Gain above that is taxed at the capital-gains "
+         "rate in every 'if sold' figure.") or DEFAULTS["filing_status"]
+home_gain_exclusion = 500_000 if filing_status == "Married" else 250_000
 marginal = st.sidebar.slider("Marginal tax rate (%)", 0.0, 55.0,
                              step=1.0, key="marginal",
                              help="Federal + California rate on your last dollar of income; "
-                                  "sets the value of the mortgage-interest deduction. "
-                                  "~42% around $300k single in CA.") / 100
+                                  "sets the value of the mortgage-interest deduction. Should "
+                                  "match your filing status: ~42% around \\$300k single in CA, "
+                                  "~33% around \\$300k married filing jointly.") / 100
 deduct = st.sidebar.checkbox("Deduct mortgage interest", key="deduct",
                              help="Reduces the owner's monthly cost by marginal rate × "
                                   "interest on the first $750k of loan balance. Assumes "
@@ -497,12 +508,14 @@ inv_tax = st.sidebar.slider(
 ) / 100
 cap_gains = st.sidebar.slider("Capital gains at sale (%)", 0.0, 45.0, step=1.0,
                               key="cap_gains",
-                              help="Applied to unrealized gains (value − contributions) in "
-                                   "all 'if sold' figures, for both scenarios.") / 100
+                              help="Applied in all 'if sold' figures to unrealized portfolio "
+                                   "gains (value − contributions) in both scenarios, and to the "
+                                   "home's gain above the §121 exclusion in the buy scenario.") / 100
 
 base = Assumptions(
     capital=capital, horizon_years=horizon,
     alt_return_annual=alt_return, investment_tax_drag=inv_tax, cap_gains_rate=cap_gains,
+    home_gain_exclusion=home_gain_exclusion,
     mortgage_rate=mort_rate, term_years=term,
     closing_buy_pct=closing_pct, other_onetime_costs=onetime, selling_cost_pct=selling_pct,
     home_appreciation=home_appr, property_tax_rate=prop_tax,
@@ -536,7 +549,7 @@ with tab1:
         r1 = st.columns(4)
         r1[0].metric(f"Buy net worth (yr {horizon})", fmt(nw_buy), border=True, height=MH,
                      help="After-tax portfolio + home value net of selling costs − loan "
-                          "balance")
+                          "balance − home-sale tax")
         r1[1].metric(f"Rent net worth (yr {horizon})", fmt(nw_rent), border=True, height=MH,
                      help="Portfolio net of capital-gains tax if sold")
         r1[2].metric("Buy advantage", fmt(delta), delta=f"{delta / nw_rent * 100:+.1f}% vs rent",
@@ -574,7 +587,8 @@ with tab1:
         with r1c1.container(border=True):
             st.markdown("**Net worth over time**")
             st.plotly_chart(networth_fig(res, yrs), key="ss_networth")
-            st.caption("Solid = if sold today (after selling costs and cap-gains tax); "
+            st.caption("Solid = if sold today (after selling costs, home-sale tax and "
+                       "portfolio cap-gains tax); "
                        "dotted = mark-to-market.")
 
         with r1c2.container(border=True):
@@ -704,15 +718,17 @@ with tab0:
             # Supplementary row (1×2)
             _w_r1c1, _w_r1c2 = st.columns(2, gap="small")
             _w_r1c1.metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=MCH,
-                           help="After-tax portfolio + home value net of selling costs − loan balance")
+                           help="After-tax portfolio + home value net of selling costs − loan balance "
+                                "− home-sale capital-gains tax (gain above the §121 exclusion)")
             _w_r1c2.metric(f"Rent net worth (yr {horizon})", fmt(_nw_rent), border=True, height=MCH,
                            help="Portfolio net of capital-gains tax if sold")
             with st.container(border=True):
                 st.markdown("**Net worth over time**")
                 st.plotly_chart(networth_fig(res, _yrs, height=_W_CHART_H), key="ov_networth")
                 with st.expander("About this chart"):
-                    st.markdown("Solid = if sold today (after selling costs and cap-gains "
-                                "tax); dotted = mark-to-market.")
+                    st.markdown("Solid = if sold today (after selling costs, home-sale tax "
+                                "and portfolio cap-gains tax); dotted = mark-to-market "
+                                "(untaxed, no selling costs).")
             with st.container(border=True):
                 st.markdown("**Net worth breakeven vs. down payment**")
                 _w_opt_fig = _down_sweep_line_fig(
@@ -784,8 +800,10 @@ with tab0:
             _rt_h1, _rt_h2 = st.columns(2, gap="small")
             _rt_h1.metric("Forced sale", _sale_label, border=True, height=MCH,
                           help="Year the owner's liquid portfolio runs dry and the house must "
-                               "be sold. 'never' means the portfolio sustains ownership costs "
-                               "indefinitely (no income, housing costs drawn from portfolio).")
+                               "be sold; the proceeds (after selling costs, loan payoff and "
+                               "home-sale tax) then fund renting. 'never' means the portfolio "
+                               "sustains ownership costs indefinitely (no income, housing "
+                               "costs drawn from portfolio).")
             _rt_h2.metric("Buy runway advantage", _runway_adv_label,
                           delta=_runway_adv_delta, delta_color=_runway_adv_delta_color,
                           border=True, height=MCH,
@@ -809,7 +827,7 @@ with tab0:
                 st.plotly_chart(_fig_rwy, key="ov_liquid_portfolio")
                 _sale_note_ov = (
                     f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
-                    f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
+                    f"after-tax proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
                     if rwy.sale_month is not None else ""
                 )
                 with st.expander("About this chart"):
@@ -880,13 +898,17 @@ with tab3:
         st.markdown("**After-tax portfolio if sold today**")
         st.latex(r"P^{AT} = P - \tau_{cg} \cdot \max(0,\ P - contributions)")
         st.caption("Cost basis = all dollars ever contributed; gains above basis are "
-                   "taxed at the capital-gains rate. Applied identically to both sides.")
+                   "taxed at the capital-gains rate. Applied identically to both "
+                   "portfolios.")
 
     with f2.container(border=True):
         st.markdown("**Net worth (both on an if-sold, after-tax basis)**")
-        st.latex(r"NW_{buy} = P^{AT}_{buy} + H(1 - s) - B \qquad"
+        st.latex(r"NW_{buy} = P^{AT}_{buy} + H(1 - s) - B - T_{home} \qquad"
                  r" NW_{rent} = P^{AT}_{rent}")
-        st.caption("H = home value, s = selling costs, B = loan balance. "
+        st.latex(r"T_{home} = \tau_{cg} \cdot \max\big(0,\ H(1 - s) - basis - X_{121}\big)")
+        st.caption("H = home value, s = selling costs, B = loan balance. Home basis = "
+                   "price + closing costs. X₁₂₁ = §121 exclusion (\\$250k single / "
+                   "\\$500k married), only after 24 months of ownership; 0 before. "
                    "Buy advantage = NW_buy − NW_rent.")
 
     # ---- Section 2: Worked example ----
@@ -941,6 +963,7 @@ with tab3:
                 [f"+ Home value × (1 − {selling_pct:.0%})",
                  fmt(res.home_value[-1] * (1 - selling_pct))],
                 ["− Loan balance", fmt(res.loan_balance[-1])],
+                ["− Home sale tax", fmt(res.home_sale_tax[-1])],
                 ["= Net worth — buy", fmt(res.net_worth_buy_liq[-1])],
                 ["Rent portfolio (after tax if sold)", fmt(res.portfolio_rent_after_tax[-1])],
                 ["= Net worth — rent", fmt(res.net_worth_rent_liq[-1])],
@@ -981,8 +1004,10 @@ with tab3:
         # --- balances (end of period)
         "Home value": res.home_value,
         "Loan balance": res.loan_balance,
-        "Home equity (if sold)": [h * (1 - selling_pct) - b for h, b in
-                                  zip(res.home_value, res.loan_balance)],
+        "Home sale tax (if sold)": res.home_sale_tax,
+        "Home equity (if sold)": [h * (1 - selling_pct) - b - t for h, b, t in
+                                  zip(res.home_value, res.loan_balance,
+                                      res.home_sale_tax)],
         "Portfolio (buy)": res.portfolio_buy,
         "Portfolio (buy, after tax if sold)": res.portfolio_buy_after_tax,
         "Portfolio (rent)": res.portfolio_rent,
@@ -998,7 +1023,8 @@ with tab3:
              "Income (−)",
              "Own cost (net)", "Rent", "Own − rent",
              "Invested → buy portfolio", "Invested → rent portfolio"]
-    STOCKS = ["Home value", "Loan balance", "Home equity (if sold)",
+    STOCKS = ["Home value", "Loan balance", "Home sale tax (if sold)",
+              "Home equity (if sold)",
               "Portfolio (buy)", "Portfolio (buy, after tax if sold)",
               "Portfolio (rent)", "Portfolio (rent, after tax if sold)",
               "Net worth — buy (if sold)", "Net worth — rent (if sold)", "Buy advantage"]
@@ -1030,7 +1056,11 @@ with tab3:
                                      "cheaper than owning that period.",
         "Home value": "Market value, compounding at the home-appreciation rate.",
         "Loan balance": "Remaining mortgage principal at the end of the period.",
-        "Home equity (if sold)": "Home value × (1 − selling costs) − loan balance.",
+        "Home sale tax (if sold)": "Capital-gains rate × max(0, home value × (1 − selling "
+                                   "costs) − (price + closing costs) − §121 exclusion). "
+                                   "No exclusion before 24 months of ownership.",
+        "Home equity (if sold)": "Home value × (1 − selling costs) − loan balance − "
+                                 "home sale tax.",
         "Portfolio (buy)": "Owner's investments: capital left after closing, "
                            "compounding plus any invested surplus.",
         "Portfolio (buy, after tax if sold)": "Portfolio (buy) minus capital-gains tax "
@@ -1084,12 +1114,15 @@ with tab3:
 - **Portfolio (buy)** starts at capital − down payment − closing costs and compounds at the
   investment return (net of annual drag), plus any invested surplus.
 - **… after tax if sold** = portfolio − capital-gains tax on embedded gains (value minus
-  contributed dollars). Applied identically to both scenarios.
-- **Home equity (if sold)** = home value × (1 − selling costs) − loan balance: the property
-  side of the buy scenario.
+  contributed dollars). Applied identically to both portfolios.
+- **Home sale tax (if sold)** = capital-gains rate × the home's gain above the §121
+  exclusion. Gain = home value × (1 − selling costs) − (price + closing costs). The
+  exclusion (\\$250k single / \\$500k married) applies only after 24 months of ownership.
+- **Home equity (if sold)** = home value × (1 − selling costs) − loan balance − home sale
+  tax: the property side of the buy scenario.
 - **Net worth — buy (if sold)** = Portfolio (buy, after tax if sold) + Home equity (if sold).
   The two components are shown separately so you can see how much of the buy net worth is
-  liquid investments vs. locked in the property. Home-sale capital gains are not modeled.
+  liquid investments vs. locked in the property.
 - **Buy advantage** is the headline number: buy minus rent net worth, both on an
   after-tax "if sold" basis.
 """)
@@ -1100,15 +1133,20 @@ with tab3:
 - **Fair comparison:** both scenarios spend the same total each month — whichever has the
   lower housing outflow invests the difference in its portfolio.
 - **Investment taxes:** an annual drag on returns (dividends/turnover) plus capital-gains
-  tax on unrealized gains, applied in every "if sold" figure for **both** scenarios.
+  tax on unrealized portfolio gains, applied in every "if sold" figure for **both**
+  scenarios' portfolios.
   Cost basis = dollars contributed; gains above basis are taxed at the sale rate.
 - **Interest deduction:** combined marginal rate × interest on the deductible share of the
   balance (capped at \\$750k of balance). Assumes you itemize either way.
 - **Prop 13:** assessed value (property tax base) grows at 2%/yr regardless of market value.
 - **PMI:** charged when down < 20%, drops when the balance falls below 78% of purchase price.
-- **Home sale:** "if sold" subtracts selling costs but **not** capital-gains tax on the home
-  (§121 excludes the first \\$250k single / \\$500k married of gain; big appreciation beyond
-  that is untaxed in this model, which flatters buying slightly).
+- **Home sale:** "if sold" subtracts selling costs **and** capital-gains tax on the home.
+  Basis = price + closing costs (one-time/moving costs are not basis); gain = value ×
+  (1 − selling costs) − basis. The §121 exclusion (\\$250k single / \\$500k married, set
+  by filing status) applies only once the home has been owned for 24 months — before that
+  the whole gain is taxed (partial/hardship exclusions are ignored). Gain above the
+  exclusion is taxed at the capital-gains rate. Mark-to-market net worth is untaxed. The
+  retirement forced sale uses the same rule.
 - **Monthly income:** Buy-side only (e.g. ADU or room rent). Grows with the rent-growth
   rate each year. Stops at a forced sale (the ADU sells with the house). Enter net of
   taxes — tax on rental income is not modeled here.
@@ -1125,7 +1163,8 @@ with tab4:
         "capital-gains tax on portfolio gains, so you sell more shares than you "
         "actually spend. "
         "When the owner's cash runs out, the house is sold (net of selling costs, "
-        "loan repaid, gains untaxed per §121 simplification) and the proceeds fund "
+        "loan repaid, capital-gains tax paid on gain above the §121 exclusion) and "
+        "the after-tax proceeds fund "
         "renting the comparable home at then-current market rent."
     )
 
@@ -1152,10 +1191,10 @@ with tab4:
                       "force-sold. 'never' means the portfolio sustains ownership "
                       "costs indefinitely (no sale ever needed).")
     rw[1].metric("Sale proceeds", sale_proc_label, border=True, height=RMH,
-                 help="Net cash from the forced sale: home value × (1 − selling "
-                      "costs) − remaining loan balance. Injected into the liquid "
-                      "portfolio to fund renting. Home-sale capital gains are not "
-                      "modeled (§121 simplification).")
+                 help="Net cash from the forced sale, after home-sale tax: home "
+                      "value × (1 − selling costs) − remaining loan balance − "
+                      "capital-gains tax on gain above the §121 exclusion. Injected "
+                      "into the liquid portfolio to fund renting.")
     rw[2].metric("Total buy runway", buy_label, border=True, height=RMH,
                  help="How long the buy scenario's combined portfolio lasts — first "
                       "as an owner, then (after the forced sale) as a renter at "
@@ -1179,7 +1218,7 @@ with tab4:
         st.plotly_chart(_fig_rwy_tab, key="rwy_liquid_portfolio")
         sale_note = (
             f" Orange diamond: forced sale at yr {rwy.sale_month / 12:.1f} — "
-            f"proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
+            f"after-tax proceeds ({fmtm(rwy.sale_proceeds)}) injected, owner becomes renter."
             if rwy.sale_month is not None else ""
         )
         st.caption(
