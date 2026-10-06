@@ -140,6 +140,30 @@ def home_sale_tax(a: Assumptions, home_value: float, months_held: int) -> float:
     return max(0.0, gain - exclusion) * a.cap_gains_rate
 
 
+def sustained_crossing(diffs: list) -> int:
+    """First index m >= 1 such that diffs[k] >= 0 for every k from m through the
+    end of the series; -1 if diffs[-1] < 0 (or the series has no month 1).
+
+    "Crosses AND stays": a series that turns non-negative and later goes
+    negative again does not count from its first crossing.
+    """
+    if len(diffs) < 2 or diffs[-1] < 0:
+        return -1
+    m = len(diffs) - 1
+    while m - 1 >= 1 and diffs[m - 1] >= 0:
+        m -= 1
+    return m
+
+
+def cashflow_breakeven_month(res: "Result") -> int:
+    """First month m >= 1 from which the GROSS owner cost (outflow_buy +
+    tax_benefit_m, i.e. before the interest deduction) stays at or below rent
+    through the horizon; -1 if owning still costs more than rent at the horizon."""
+    return sustained_crossing([
+        r - (b + t) for b, t, r in zip(res.outflow_buy, res.tax_benefit_m, res.outflow_rent)
+    ])
+
+
 def simulate(a: Assumptions) -> Result:
     n = a.horizon_years * 12
     down = a.price * a.down_pct
@@ -277,11 +301,7 @@ def simulate(a: Assumptions) -> Result:
         cb_v.append(contrib_buy)
         cr_v.append(contrib_rent)
 
-    breakeven = -1
-    for m in range(1, n + 1):
-        if nwbl_v[m] >= nwrl_v[m]:
-            breakeven = m
-            break
+    breakeven = sustained_crossing([b - r for b, r in zip(nwbl_v, nwrl_v)])
 
     return Result(
         feasible=feasible,

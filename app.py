@@ -11,7 +11,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import Assumptions, simulate, rent_from_price, runway, RunwayResult
+from model import (Assumptions, simulate, rent_from_price, runway, RunwayResult,
+                   cashflow_breakeven_month)
 
 st.set_page_config(page_title="Rent vs. Buy", page_icon=":material/home_work:",
                    layout="wide")
@@ -312,13 +313,9 @@ def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
         be_yr = r.breakeven_month / 12 if r.breakeven_month > 0 else None
         wealth_curve.append((d_int, be_yr))
 
-        # gross cash-flow breakeven (first month gross own cost ≤ rent)
-        cf_be_month = None
-        for m in range(1, len(r.outflow_buy)):
-            if (r.outflow_buy[m] + r.tax_benefit_m[m]) <= r.outflow_rent[m]:
-                cf_be_month = m
-                break
-        cf_be_yr = cf_be_month / 12 if cf_be_month is not None else None
+        # gross cash-flow breakeven (gross own cost ≤ rent from here on)
+        cf_be_month = cashflow_breakeven_month(r)
+        cf_be_yr = cf_be_month / 12 if cf_be_month > 0 else None
         cashflow_curve.append((d_int, cf_be_yr))
 
         # runway() — buy runway
@@ -559,7 +556,8 @@ with tab1:
         if res.breakeven_month > 0:
             r1[3].metric("Net worth breakeven", f"year {res.breakeven_month / 12:.1f}",
                          border=True, height=MH,
-                         help="First month buying (after selling costs) beats renting")
+                         help="First month from which buying (after selling costs and taxes) "
+                              "stays ahead of renting through the horizon")
         else:
             r1[3].metric("Net worth breakeven", "never (in horizon)", border=True, height=MH,
                          help="Buying never catches renting within the horizon; extend the "
@@ -636,13 +634,8 @@ with tab0:
         _cost_diff = (res.outflow_buy[1] + res.tax_benefit_m[1]) - res.outflow_rent[1]
 
         # --- Metric 4: Monthly cost breakeven — GROSS ---
-        _cash_be_month = None
-        for _m in range(1, len(res.outflow_buy)):
-            _gross_own = res.outflow_buy[_m] + res.tax_benefit_m[_m]
-            if _gross_own <= res.outflow_rent[_m]:
-                _cash_be_month = _m
-                break
-        if _cash_be_month is None:
+        _cash_be_month = cashflow_breakeven_month(res)
+        if _cash_be_month < 0:
             _cash_be_label = "never (in horizon)"
         elif _cash_be_month == 1:
             _cash_be_label = "immediately"
@@ -713,8 +706,10 @@ with tab0:
                          help="Liquid net worth difference at the horizon (buy minus rent), "
                               "after taxes and selling costs. Positive = buying wins.")
             _w_h2.metric("Net worth breakeven", _be_label, border=True, height=MCH,
-                         help="First month buying net worth (after selling costs) "
-                              "exceeds renting net worth — and stays ahead.")
+                         help="First month from which buy net worth (after selling costs "
+                              "and taxes) is at or above rent net worth and stays ahead "
+                              "through the horizon. 'never' = buying is behind at the "
+                              "horizon, even if it was briefly ahead earlier.")
             # Supplementary row (1×2)
             _w_r1c1, _w_r1c2 = st.columns(2, gap="small")
             _w_r1c1.metric(f"Buy net worth (yr {horizon})", fmt(_nw_buy), border=True, height=MCH,
@@ -736,11 +731,12 @@ with tab0:
                 st.plotly_chart(_w_opt_fig, key="ov_wealth_dp_sweep")
                 with st.expander("About this chart"):
                     st.markdown(
-                        "Year at which buy net worth (after selling costs) first exceeds "
-                        "rent net worth, as a function of down payment at the current price. "
-                        "Gaps = infeasible (upfront cash exceeds capital). "
-                        "The marker at the current sidebar down payment can be read off "
-                        "against the main breakeven card above."
+                        "Year from which buy net worth (after selling costs and taxes) "
+                        "stays at or above rent net worth through the horizon, as a "
+                        "function of down payment at the current price. Gaps = infeasible "
+                        "(upfront cash exceeds capital) or buying behind at the horizon. "
+                        "Read the current sidebar down payment off the x-axis to compare "
+                        "with the breakeven card above."
                     )
 
         # ---- Cash flow column ----
@@ -756,8 +752,9 @@ with tab0:
                                "The interest deduction arrives at tax filing and is counted in net worth, "
                                "not netted into this monthly figure.")
             _cf_h2.metric("Monthly cost breakeven", _cash_be_label, border=True, height=MCH,
-                          help="First month the gross owner cost (before the interest deduction) "
-                               "is at or below rent — i.e., when owning is cheaper month-to-month "
+                          help="First month from which the gross owner cost (before the interest "
+                               "deduction) stays at or below rent through the horizon — i.e., when "
+                               "owning becomes and stays cheaper month-to-month "
                                "on a cash-out-the-door basis. The deduction arrives annually at "
                                "tax time and is counted in net worth, not subtracted here.")
             # Supplementary row (1×2)
@@ -785,8 +782,9 @@ with tab0:
                 st.plotly_chart(_cf_opt_fig, key="ov_cashflow_dp_sweep")
                 with st.expander("About this chart"):
                     st.markdown(
-                        "Year at which the gross owner cost (before the interest deduction) "
-                        "first falls at or below rent, as a function of down payment at the "
+                        "Year from which the gross owner cost (before the interest deduction) "
+                        "stays at or below rent through the horizon, as a function of down "
+                        "payment at the "
                         "current price. A larger down payment means a smaller mortgage, so "
                         "the gross cost breakeven typically comes sooner. "
                         "Gaps = infeasible (upfront cash exceeds capital)."
