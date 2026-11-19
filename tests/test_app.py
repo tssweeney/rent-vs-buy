@@ -181,6 +181,9 @@ def test_assumptions_tab_reflects_active_inputs():
     assert values["Mortgage rate"]["Value/Formula"] == "6.125% fixed"
     assert values["Mortgage rate"]["Real Value"] == f"${at.tabs[2].dataframe[-1].value.iloc[1]['  of which interest']:,.0f}"
     assert values["HOA dues"]["Real Value"] == "$3,000"
+    assert values["Initial investment"]["Real Value"].splitlines() == [
+        r"Buy \$819,000" + "  ", r"Rent \$1,500,000",
+    ]
     assert values["Home-sale gain exclusion"]["Value/Formula"] == "$500,000"
     assert values["Home-sale gain exclusion"]["Real Value"] == "$0"
     assert values["Mortgage tax savings limit"]["Real Value"] == "$0"

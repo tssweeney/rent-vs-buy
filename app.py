@@ -1519,7 +1519,8 @@ def year_one(series):
 
 
 def buy_and_rent(buy, rent):
-    return f"Buy {fmt(buy)} / Rent {fmt(rent)}"
+    # Table cells render Markdown. Escape currency and use a hard line break.
+    return f"Buy {fmtm(buy)}  \nRent {fmtm(rent)}"
 
 
 with tab_assumptions:
