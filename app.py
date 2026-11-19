@@ -119,8 +119,8 @@ def monthly_cost_fig(res, yrs, height=340):
                 hovertemplate="%{y:$,.0f}",
             ))
     fig2.add_trace(go.Scatter(
-        x=_x, y=res.outflow_buy[1:], name="Own cost (net of tax benefit & income)",
-        line=dict(width=2, color="black"),
+        x=_x, y=res.outflow_buy[1:], name="Net owner cost",
+        line=dict(width=3, color="#BB7300"),
         hovertemplate="%{y:$,.0f}",
     ))
     if max(res.income_m[1:]) > 0:
@@ -142,13 +142,13 @@ def monthly_cost_fig(res, yrs, height=340):
 
 def sensitivity_fig(a, alt_return, horizon):
     """Buy advantage vs. investment return sensitivity line."""
-    rates = np.arange(0.03, 0.111, 0.005)
+    return_percentages = [step / 4 for step in range(49)]
     adv = []
-    for r in rates:
-        s = simulate(replace(a, alt_return_annual=float(r)))
+    for percent in return_percentages:
+        s = simulate(replace(a, alt_return_annual=percent / 100))
         adv.append(s.net_worth_buy_liq[-1] - s.net_worth_rent_liq[-1])
     fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=rates * 100, y=adv, name="Buy advantage"))
+    fig3.add_trace(go.Scatter(x=return_percentages, y=adv, name="Buy advantage"))
     fig3.add_hline(y=0, line_dash="dash", line_color="gray")
     fig3.add_vline(x=alt_return * 100, line_dash="dot", line_color="green",
                    annotation_text="your assumption")
@@ -185,10 +185,8 @@ def liquid_portfolio_fig(rwy, fmt_fn, height=340):
         sale_portfolio_val = rwy.liquid_buy[sale_idx] if sale_idx < len(rwy.liquid_buy) else 0
         fig_rwy.add_trace(go.Scatter(
             x=[rwy.sale_month / 12], y=[sale_portfolio_val],
-            mode="markers+text",
+            mode="markers",
             marker=dict(size=12, symbol="diamond", color="orange"),
-            text=[f"sold house<br>{fmt_fn(rwy.sale_proceeds)}"],
-            textposition="top center",
             showlegend=False,
             hovertemplate=f"Yr %{{x:.1f}}: house sold, proceeds {fmt_fn(rwy.sale_proceeds)}<extra></extra>",
         ))
@@ -196,22 +194,18 @@ def liquid_portfolio_fig(rwy, fmt_fn, height=340):
     if buy_dep is not None and buy_dep <= cutoff_m:
         fig_rwy.add_trace(go.Scatter(
             x=[buy_dep / 12], y=[0],
-            mode="markers+text",
+            mode="markers",
             marker=dict(size=10, symbol="x", color="blue"),
-            text=[f"Buy depleted<br>yr {buy_dep / 12:.1f}"],
-            textposition="top center",
             showlegend=False,
-            hoverinfo="skip",
+            hovertemplate="Buy depleted in year %{x:.1f}<extra></extra>",
         ))
     if rent_dep is not None and rent_dep <= cutoff_m:
         fig_rwy.add_trace(go.Scatter(
             x=[rent_dep / 12], y=[0],
-            mode="markers+text",
+            mode="markers",
             marker=dict(size=10, symbol="x", color="red"),
-            text=[f"Rent depleted<br>yr {rent_dep / 12:.1f}"],
-            textposition="top center",
             showlegend=False,
-            hoverinfo="skip",
+            hovertemplate="Rent depleted in year %{x:.1f}<extra></extra>",
         ))
 
     return compact(fig_rwy, height=height, xaxis_title="Years", yaxis_title="$"), cutoff_m
@@ -236,7 +230,7 @@ def runway_sweep_fig(sweep_data, rent_runway_months, height=320):
                         if rent_runway_months is not None else 100.0,
                         line_dash="dash", line_color="gray",
                         annotation_text="Rent runway",
-                        annotation_position="right")
+                        annotation_position="top right")
 
     peak_idx = int(max(range(len(sweep_y)), key=lambda i: sweep_y[i]))
     peak_down = sweep_x[peak_idx]
@@ -256,7 +250,7 @@ def runway_sweep_fig(sweep_data, rent_runway_months, height=320):
 
 @st.cache_data(show_spinner="Computing down-payment optimization curves...")
 def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
-    """Sweep down payment at 3% and 5% increments through 100% at the current price.
+    """Evaluate each selectable down payment from 3% through 100% at the current price.
 
     Returns three parallel lists (one entry per feasible down %):
       wealth_curve  : list of (down_pct_int, breakeven_yr | None)
@@ -269,7 +263,7 @@ def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
     cashflow_curve = []
     runway_curve = []
 
-    for d_int in (3, *range(5, 101, 5)):
+    for d_int in range(3, 101):
         d = d_int / 100
         upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
         if upfront_d > base_a.capital:
@@ -540,7 +534,7 @@ with tab_overview:
         if res.breakeven_month > 0:
             _be_label = f"year {res.breakeven_month / 12:.1f}"
         else:
-            _be_label = "never (in horizon)"
+            _be_label = f"None by yr {horizon}"
 
         # --- Metric 3: Monthly cost vs rent (mo 1) — GROSS (before interest deduction) ---
         _cost_diff = (res.outflow_buy[1] + res.tax_benefit_m[1]) - res.outflow_rent[1]
@@ -548,7 +542,7 @@ with tab_overview:
         # --- Metric 4: Monthly cost breakeven — GROSS ---
         _cash_be_month = cashflow_breakeven_month(res)
         if _cash_be_month < 0:
-            _cash_be_label = "never (in horizon)"
+            _cash_be_label = f"None by yr {horizon}"
         elif _cash_be_month == 1:
             _cash_be_label = "immediately"
         else:
@@ -608,7 +602,7 @@ with tab_overview:
             _w_h2.metric("Net worth breakeven", _be_label, border=True, height=MCH,
                          help="First month from which buy net worth (after selling costs "
                               "and taxes) is at or above rent net worth and stays ahead "
-                              "through the horizon. 'never' = buying is behind at the "
+                              "through the horizon. No breakeven means buying is behind at the "
                               "horizon, even if it was briefly ahead earlier.")
             # Supplementary row (1×2)
             _w_r1c1, _w_r1c2 = st.columns(2, gap="small")

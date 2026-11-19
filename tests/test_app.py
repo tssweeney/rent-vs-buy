@@ -1,5 +1,6 @@
 """Smoke tests for the Streamlit app via AppTest (no server)."""
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -126,3 +127,16 @@ def test_manual_rent_matches_explorer_and_wealth_trace():
     trace = at.tabs[2].dataframe[-1].value
     assert f"${trace.iloc[-1]['Buy advantage']:,.0f}" == overview
     assert trace.iloc[1]["Rent"] == 12 * 500
+
+
+def test_charts_include_every_selectable_down_payment_and_return():
+    at = _run({"down_pct": 31, "alt_return": 11.75})
+    charts = {chart.proto.id.rsplit("-", 1)[-1]: json.loads(chart.proto.spec)["data"][0]
+              for chart in at.get("plotly_chart")}
+    for key in ("ov_wealth_dp_sweep", "ov_cashflow_dp_sweep", "ov_runway_sweep"):
+        assert charts[key]["x"] == list(range(3, 101))
+    sensitivity = charts["sup_sensitivity"]
+    assert sensitivity["x"] == [step / 4 for step in range(49)]
+    selected = sensitivity["x"].index(11.75)
+    headline = next(m.value for m in at.metric if m.label == "Buy advantage")
+    assert f"${sensitivity['y'][selected]:,.0f}" == headline
