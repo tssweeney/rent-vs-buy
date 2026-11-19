@@ -15,8 +15,8 @@ Simplifications (documented in the app):
 - Investment taxes are split in two: a small annual drag on returns
   on distributed income, which is reinvested after tax, plus capital-gains tax on
   embedded gains (value - cost basis) applied in all "if sold" values.
-- Mortgage interest deduction: a single combined marginal rate applied to
-  interest on the deductible share of the balance (cap / balance, <= 1).
+- Mortgage interest deduction: separate federal and California marginal rates applied to
+  interest on each jurisdiction’s eligible opening balance.
   Assumes you itemize regardless (reasonable at CA incomes with SALT).
 - Property tax assessed value grows at the Prop 13 cap, independent of market
   value.
@@ -30,7 +30,9 @@ Simplifications (documented in the app):
   Mark-to-market net worth stays untaxed.
 """
 
-from dataclasses import dataclass
+from bisect import bisect_left
+from dataclasses import dataclass, replace
+from functools import cache
 
 
 @dataclass
@@ -64,7 +66,7 @@ class Assumptions:
     pmi_rate: float = 0.006              # of balance, annual, while LTV > 80%
 
     # taxes
-    marginal_tax_rate: float = 0.42      # combined fed + CA marginal rate
+    marginal_tax_rate: float = 0.42      # federal marginal rate (legacy single-rate scenarios use this alone)
     include_interest_deduction: bool = True
     interest_deduction_cap: float = 750_000
 
@@ -77,6 +79,35 @@ class Assumptions:
 
     closing_basis_share: float = 0.0  # fraction of total closing costs eligible for basis
     investment_income_share: float | None = None  # fraction of return distributed as income
+    annual_interest_savings_limit: float | None = None  # optional annualized ceiling, applied monthly
+
+    fixed_down_payment: float | None = None
+    fixed_loan_size: float | None = None
+    ca_marginal_tax_rate: float = 0.0
+    ca_interest_deduction_cap: float = 1_000_000
+    seller_closing_credit: float = 0.0
+
+    @property
+    def down_payment(self) -> float:
+        if self.fixed_loan_size is not None:
+            if self.fixed_down_payment is not None:
+                raise ValueError("Select only one fixed financing amount")
+            return self.price - self.fixed_loan_size
+        if self.fixed_down_payment is not None:
+            return self.fixed_down_payment
+        return self.price * self.down_pct
+
+    @property
+    def applied_seller_credit(self) -> float:
+        return min(max(0.0, self.seller_closing_credit), self.price * self.closing_buy_pct)
+
+    @property
+    def buyer_paid_closing_costs(self) -> float:
+        return self.price * self.closing_buy_pct - self.applied_seller_credit
+
+    @property
+    def cash_to_close(self) -> float:
+        return self.down_payment + self.buyer_paid_closing_costs + self.other_onetime_costs
 
 
 def monthly_portfolio_rates(a: Assumptions) -> tuple[float, float]:
@@ -144,7 +175,7 @@ MONTHS_FOR_121 = 24   # Sec. 121 ownership + use test (2 of the last 5 years)
 
 def home_basis(a: Assumptions) -> float:
     """Home cost basis: purchase price + eligible buy-side closing costs."""
-    return a.price * (1 + a.closing_buy_pct * a.closing_basis_share)
+    return a.price + a.buyer_paid_closing_costs * a.closing_basis_share
 
 
 def home_sale_tax(a: Assumptions, home_value: float, months_held: int) -> float:
@@ -182,8 +213,10 @@ def cashflow_breakeven_month(res: "Result") -> int:
 
 def simulate(a: Assumptions) -> Result:
     n = a.horizon_years * 12
-    down = a.price * a.down_pct
-    upfront = down + a.price * a.closing_buy_pct + a.other_onetime_costs
+    down = a.down_payment
+    if not 0 <= down <= a.price:
+        raise ValueError("Financing amount exceeds purchase price or is negative")
+    upfront = a.cash_to_close
     feasible = upfront <= a.capital
 
     loan0 = a.price - down
@@ -255,11 +288,15 @@ def simulate(a: Assumptions) -> Result:
         # tax benefit of interest (deductible share limited by cap)
         tax_benefit = 0.0
         if a.include_interest_deduction and interest > 0:
-            share = min(1.0, a.interest_deduction_cap / max(bal + principal, 1.0))
-            tax_benefit = interest * share * a.marginal_tax_rate
+            opening_balance = bal + principal
+            federal = min(opening_balance, a.interest_deduction_cap) * a.marginal_tax_rate
+            california = min(opening_balance, a.ca_interest_deduction_cap) * a.ca_marginal_tax_rate
+            tax_benefit = (federal + california) * r_m
+            if a.annual_interest_savings_limit is not None:
+                tax_benefit = min(tax_benefit, a.annual_interest_savings_limit / 12)
 
         pmi = 0.0
-        if loan0 > 0 and a.down_pct < 0.20 and bal / a.price > 0.78:
+        if loan0 > 0 and down < a.price * 0.20 and bal / a.price > 0.78:
             pmi = bal * a.pmi_rate / 12
 
         prop_tax = assessed * a.property_tax_rate / 12
@@ -426,10 +463,10 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
     n = max_years * 12
 
     # --- Buy setup ---
-    down = a.price * a.down_pct
-    closing = a.price * a.closing_buy_pct
-    one_time = a.other_onetime_costs
-    upfront = down + closing + one_time
+    down = a.down_payment
+    if not 0 <= down <= a.price:
+        raise ValueError("Financing amount exceeds purchase price or is negative")
+    upfront = a.cash_to_close
 
     loan0 = a.price - down
     pay = monthly_payment(loan0, a.mortgage_rate, a.term_years)
@@ -478,7 +515,7 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
             bal = max(bal - principal, 0.0)
 
             pmi = 0.0
-            if loan0 > 0 and a.down_pct < 0.20 and (bal / a.price) > 0.78:
+            if loan0 > 0 and down < a.price * 0.20 and (bal / a.price) > 0.78:
                 pmi = bal * a.pmi_rate / 12
 
             prop_tax = assessed * a.property_tax_rate / 12
@@ -587,3 +624,61 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
         sale_month=sale_month,
         sale_proceeds=sale_proceeds_val,
     )
+
+
+def breakeven_rents(a: Assumptions, max_rent: int = 50_000):
+    """Whole-dollar starting rents, with every other assumption held fixed.
+
+    Return the first rent where buying matches or beats renting at the horizon,
+    the interval where the last month is the first sustained crossing, and all
+    intervals where the portfolios actually deplete in the same month.
+    """
+    rents = range(max_rent + 1)
+
+    def first_buy_win(month):
+        def gap(rent):
+            r = simulate(replace(a, monthly_rent=rent))
+            return r.net_worth_buy_liq[month] - r.net_worth_rent_liq[month]
+
+        # Higher rent increases buy-side contributions or reduces rent-side ones.
+        return bisect_left(rents, 0, key=gap)
+
+    horizon = a.horizon_years * 12
+    first = first_buy_win(horizon)
+    final_month_band = None
+    if first <= max_rent:
+        # A sustained crossing starts in the last month exactly when the
+        # preceding month is negative and the final month is nonnegative.
+        upper = first_buy_win(horizon - 1) - 1
+        if upper >= first:
+            final_month_band = (first, upper)
+
+    @cache
+    def depletion_months(rent):
+        r = runway(replace(a, monthly_rent=rent))
+        # Infinity denotes a censored observation, never an observed tie.
+        return (r.depleted_buy_month or float("inf"), r.depleted_rent_month or float("inf"))
+
+    ties = []
+
+    def collect_ties(low, high):
+        # Each portfolio's depletion month can only move earlier as rent
+        # rises. The owner's sale month is independent of comparable rent.
+        # The difference need not be monotone, so retain disjoint tie bands.
+        buy_low, rent_low = depletion_months(low)
+        buy_high, rent_high = depletion_months(high)
+        if buy_high > rent_low or rent_high > buy_low:
+            return
+        if buy_low == buy_high and rent_low == rent_high:
+            if buy_low == rent_low and buy_low != float("inf"):
+                if ties and ties[-1][1] + 1 == low:
+                    ties[-1] = (ties[-1][0], high)
+                else:
+                    ties.append((low, high))
+            return
+        mid = (low + high) // 2
+        collect_ties(low, mid)
+        collect_ties(mid + 1, high)
+
+    collect_ties(0, max_rent)
+    return first if first <= max_rent else None, final_month_band, ties

@@ -8,6 +8,7 @@ import pytest
 
 from model import (
     Assumptions,
+    breakeven_rents,
     cashflow_breakeven_month,
     home_sale_tax,
     rent_from_price,
@@ -232,3 +233,70 @@ def test_runway_invests_property_income_left_after_owner_costs():
     w = runway(replace(BASE, monthly_income=20_000, alt_return_annual=0), max_years=1)
     assert w.monthly_need_buy[1] < 0
     assert w.liquid_buy[1] == pytest.approx(w.liquid_buy[0] - w.monthly_need_buy[1])
+
+
+def test_mortgage_savings_limit_applies_only_to_wealth_tax_benefit():
+    a = replace(BASE, horizon_years=20, term_years=15, annual_interest_savings_limit=6_000)
+    capped = simulate(a)
+    full = simulate(replace(a, annual_interest_savings_limit=None))
+    assert capped.tax_benefit_m == pytest.approx([min(v, 500) for v in full.tax_benefit_m])
+    assert sum(capped.tax_benefit_m[1:13]) == pytest.approx(6_000)
+    assert capped.tax_benefit_m[-1] == pytest.approx(0)
+    assert runway(a) == runway(replace(a, annual_interest_savings_limit=None))
+
+
+def test_inverse_rents_match_forward_results_at_every_dollar():
+    # Scale the scenario so a small whole-dollar grid spans both crossings.
+    a = replace(BASE, capital=15_000, price=14_000, other_onetime_costs=100,
+                hoa_monthly=2.5, home_gain_exclusion=2_500)
+    first, final_band, ties = breakeven_rents(a, max_rent=100)
+    winning, final_month, equal_runway = [], [], []
+    for rent in range(101):
+        scenario = replace(a, monthly_rent=rent)
+        result = simulate(scenario)
+        if result.net_worth_buy_liq[-1] >= result.net_worth_rent_liq[-1]:
+            winning.append(rent)
+        if result.breakeven_month == a.horizon_years * 12:
+            final_month.append(rent)
+        w = runway(scenario)
+        if w.depleted_buy_month is not None and w.depleted_buy_month == w.depleted_rent_month:
+            equal_runway.append(rent)
+    assert first == min(winning)
+    assert (list(range(final_band[0], final_band[1] + 1)) if final_band else []) == final_month
+    assert [v for lo, hi in ties for v in range(lo, hi + 1)] == equal_runway
+
+
+def test_default_final_month_band_and_disjoint_runway_ties():
+    first, band, ties = breakeven_rents(BASE)
+    assert first == 2150 and band == (2150, 2154)
+    assert len(ties) > 1
+    for low, high in ties:
+        for rent in (low - 1, low, high, high + 1):
+            w = runway(replace(BASE, monthly_rent=rent))
+            assert (w.depleted_buy_month == w.depleted_rent_month) == (low <= rent <= high)
+
+
+@pytest.mark.parametrize("loan", [700_000, 750_000, 850_000, 1_000_000, 1_200_000])
+def test_federal_and_california_interest_limits(loan):
+    a = replace(BASE, fixed_loan_size=loan, marginal_tax_rate=0.32, ca_marginal_tax_rate=0.093)
+    r = simulate(a)
+    assert r.loan_balance[0] == loan
+    for opening_balance, benefit in zip(r.loan_balance, r.tax_benefit_m[1:]):
+        expected = a.mortgage_rate / 12 * (
+            min(opening_balance, 750_000) * 0.32 + min(opening_balance, 1_000_000) * 0.093
+        )
+        assert benefit == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("offered, applied", [(0, 0), (10_000, 10_000), (50_000, 21_000)])
+def test_seller_closing_credit(offered, applied):
+    a = replace(BASE, seller_closing_credit=offered, closing_basis_share=0.4,
+                capital=BASE.cash_to_close - 10_000)
+    assert a.cash_to_close == BASE.cash_to_close - applied
+    r = simulate(a)
+    assert r.feasible == (applied >= 10_000)
+    assert r.loan_balance[0] == BASE.price - BASE.down_payment
+    assert r.portfolio_buy[0] == max(0, a.capital - a.cash_to_close)
+    assert runway(a).liquid_buy[0] == r.portfolio_buy[0]
+    gain = r.home_value[-1] * (1 - a.selling_cost_pct) - a.price - (21_000 - applied) * 0.4
+    assert r.home_sale_tax[-1] == pytest.approx((gain - a.home_gain_exclusion) * a.cap_gains_rate)

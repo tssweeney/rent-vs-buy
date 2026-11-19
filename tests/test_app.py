@@ -28,7 +28,7 @@ def test_tabs_and_defaults():
     at = _run()
     assert not at.exception, [e.value for e in at.exception]
     assert [t.label for t in at.tabs] == ["Overview", "Scenario Explorer", "Calculations",
-                                          "Charts"]
+                                          "Supplemental Analysis", "Assumptions"]
     labels = [m.label for m in at.metric]
     assert "Buy advantage" in labels and "Net worth breakeven" in labels
 
@@ -36,8 +36,8 @@ def test_tabs_and_defaults():
 OVERRIDES = [
     {"horizon": 1},
     {"horizon": 30},
-    {"down_pct": 3},
-    {"down_pct": 100},
+    {"financing_mode": "Down payment (%)", "down_pct": 3},
+    {"financing_mode": "Down payment (%)", "down_pct": 100},
     {"alt_return": 0.0},
     {"alt_return": 12.0},
     {"home_appr": 0.0},
@@ -94,6 +94,7 @@ def test_rerun_sequence_no_crash():
         at = AppTest.from_file({APP!r}, default_timeout={TIMEOUT})
         at.run()
         at.number_input(key="price").set_value(1_200_000).run()
+        at.radio(key="financing_mode").set_value("Down payment (%)").run()
         at.slider(key="down_pct").set_value(70).run()
         assert not at.exception, [e.value for e in at.exception]
         print("OK")
@@ -105,7 +106,7 @@ def test_rerun_sequence_no_crash():
 
 
 @pytest.mark.parametrize("overrides, expected, delta", [
-    ({"down_pct": 31}, "0 yrs", "same depletion month"),
+    ({"financing_mode": "Down payment (%)", "down_pct": 31}, "0 yrs", "same depletion month"),
     ({"monthly_income": 20_000}, "> 885 mo", "buy lasts longer"),
     ({"monthly_income": 20_000, "alt_return": 12.0}, "—", "both funded through year 100"),
 ])
@@ -118,7 +119,8 @@ def test_runway_comparison(overrides, expected, delta):
 
 
 def test_manual_rent_matches_explorer_and_wealth_trace():
-    at = _run({"derive_rent": False, "rent0": 500, "price": 200_000, "down_pct": 100})
+    at = _run({"derive_rent": False, "rent0": 500, "price": 200_000, "financing_mode": "Down payment (%)",
+               "down_pct": 100, "sweep_y": "down_pct"})
     overview = next(m.value for m in at.metric if m.label == "Buy advantage")
     best = at.tabs[1].dataframe[0].value.iloc[0]
     assert best["Purchase price ($)"] == "$200,000"
@@ -130,7 +132,7 @@ def test_manual_rent_matches_explorer_and_wealth_trace():
 
 
 def test_charts_include_every_selectable_down_payment_and_return():
-    at = _run({"down_pct": 31, "alt_return": 11.75})
+    at = _run({"financing_mode": "Down payment (%)", "down_pct": 31, "alt_return": 11.75})
     charts = {chart.proto.id.rsplit("-", 1)[-1]: json.loads(chart.proto.spec)["data"][0]
               for chart in at.get("plotly_chart")}
     for key in ("ov_wealth_dp_sweep", "ov_cashflow_dp_sweep", "ov_runway_sweep"):
@@ -140,3 +142,83 @@ def test_charts_include_every_selectable_down_payment_and_return():
     selected = sensitivity["x"].index(11.75)
     headline = next(m.value for m in at.metric if m.label == "Buy advantage")
     assert f"${sensitivity['y'][selected]:,.0f}" == headline
+
+
+def test_default_decision_summary_reconciles_with_alternative_inputs():
+    at = _run()
+    overview = at.tabs[0]
+    assert any("**3.25% per year**" in item.value for item in overview.markdown)
+    targets, ranking, exits = [frame.value for frame in overview.dataframe]
+    assert targets["Starting rent / month"].tolist() == [
+        "From $2,185", "$2,185–$2,190", "$3,794", "$7,797",
+    ]
+    assert [item.label for item in overview.expander][-2:] == [
+        "Break-even rent by outcome", "Which assumptions change the decision?",
+    ]
+    assert ranking.iloc[0]["Change tested"] == "Home appreciation +1 percentage point"
+    assert ranking.iloc[0]["Effect on buy advantage"] == "+153,344 USD"
+    headline = next(m.value for m in overview.metric if m.label == "Buy advantage")
+    assert exits.iloc[2]["After selling"] == f"Buy ahead by {headline}"
+    assert exits.iloc[-1]["After selling"].startswith("Rent ahead")
+    at.number_input(key="annual_tax_limit").set_value(0).run()
+    capped = next(m.value for m in at.metric if m.label == "Buy advantage")
+    at.checkbox(key="deduct").uncheck().run()
+    assert next(m.value for m in at.metric if m.label == "Buy advantage") == capped
+
+
+def test_assumptions_tab_reflects_active_inputs():
+    at = _run({"derive_rent": False, "rent0": 3200, "mort_rate": 6.125,
+               "filing_status": "Married", "annual_tax_limit": 0})
+    def summary():
+        tables = [table.value for table in at.tabs[-1].table]
+        assert all(list(table.columns) == ["Assumption", "Value/Formula", "Real Value", "Comment"]
+                   for table in tables)
+        return {row["Assumption"]: row for table in tables for row in table.to_dict("records")}
+
+    values = summary()
+    assert values["Starting comparable rent"]["Value/Formula"] == "$3,200/month"
+    assert values["Starting comparable rent"]["Real Value"] == "$38,400"
+    assert values["Mortgage rate"]["Value/Formula"] == "6.125% fixed"
+    assert values["Mortgage rate"]["Real Value"] == f"${at.tabs[2].dataframe[-1].value.iloc[1]['  of which interest']:,.0f}"
+    assert values["HOA dues"]["Real Value"] == "$3,000"
+    assert values["Home-sale gain exclusion"]["Value/Formula"] == "$500,000"
+    assert values["Home-sale gain exclusion"]["Real Value"] == "$0"
+    assert values["Mortgage tax savings limit"]["Real Value"] == "$0"
+    at.checkbox(key="deduct").uncheck().run()
+    assert summary()["Mortgage tax savings limit"]["Value/Formula"] == "Inactive"
+
+
+def test_fixed_financing_tracks_price_changes_and_explorer():
+    at = _run({"home_appr": 10.0})
+    def opening_loan():
+        return at.tabs[2].dataframe[-1].value.iloc[0]["Loan balance"]
+
+    assert opening_loan() == 750_000
+    at.number_input(key="price").set_value(1_200_000).run()
+    assert opening_loan() == 750_000
+    grid = at.tabs[1].dataframe[0].value
+    row = grid.loc[grid["Purchase price ($)"] == "$1,200,000"].iloc[0]
+    assert row["Buy advantage ($, maximize)"] == next(m.value for m in at.metric if m.label == "Buy advantage")
+    at.radio(key="financing_mode").set_value("Fixed down payment").run()
+    at.number_input(key="fixed_down").set_value(450_000).run()
+    assert opening_loan() == 750_000
+    at.number_input(key="price").set_value(1_400_000).run()
+    assert opening_loan() == 950_000
+    at.radio(key="financing_mode").set_value("Fixed loan size").run()
+    assert opening_loan() == 750_000
+    at.radio(key="financing_mode").set_value("Fixed down payment").run()
+    assert opening_loan() == 950_000
+    at.number_input(key="fixed_down").set_value(1_500_000).run()
+    assert not at.exception
+    assert any("exceeds the purchase price" in msg.value for msg in at.error)
+
+
+def test_concessions_show_offered_and_applied_credit():
+    at = _run({"seller_credit": 30_000})
+    assert not at.exception
+    deal = at.tabs[-1].table[0].value.set_index("Assumption")
+    assert deal.loc["Seller concessions", "Value/Formula"] == "$30,000"
+    assert deal.loc["Seller concessions", "Real Value"] == "$21,000"
+    assert deal.loc["Buyer-paid closing costs", "Real Value"] == "$0"
+    closing = at.tabs[2].dataframe[0].value.set_index("Item")
+    assert closing.loc["+ Seller credit applied", "Amount"] == "$21,000"
