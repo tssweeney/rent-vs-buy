@@ -11,6 +11,8 @@ investing the difference. It answers three questions:
 
 [Open the hosted dashboard on Streamlit](https://rent-vs-buy-zkayae2krysdjweasvgqpv.streamlit.app/).
 
+Use **Copy share link** in the sidebar to copy a snapshot of the current settings, including financial inputs. Anyone with the link can reopen that scenario. Links from the hosted dashboard open the public app.
+
 ## Run locally
 
 ```sh

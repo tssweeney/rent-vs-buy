@@ -5,6 +5,7 @@ Run with: streamlit run app.py
 
 import math
 from dataclasses import dataclass, replace
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import numpy as np
 import pandas as pd
@@ -33,8 +34,6 @@ DEFAULTS = {
     # scenario explorer tab
     "sweep_x": "price", "sweep_y": "home_appr",
 }
-for _k, _v in DEFAULTS.items():
-    st.session_state.setdefault(_k, _v)
 
 
 def fmt(x):
@@ -376,17 +375,18 @@ def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240, best="min"
 
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("Assumptions")
+share_slot = st.sidebar.empty()
 
 # ---- Section 0: Investment --------------------------------------
 st.sidebar.subheader("Investment")
 capital = st.sidebar.number_input("Starting cash, after tax ($)", 100_000, 10_000_000,
-                                  step=50_000, key="capital",
+                                  step=50_000, value=DEFAULTS["capital"], key="capital", bind="query-params",
                                   help="Cash available today without any tax due to access it. Buy: pays down payment "
                                        "+ closing + one-time costs, remainder is invested. "
                                        "Rent: all of it is invested.")
 alt_return = st.sidebar.slider(
     "Investment return (%, pre-tax)", 0.0, 12.0,
-    step=0.25, key="alt_return",
+    step=0.25, value=DEFAULTS["alt_return"], key="alt_return", bind="query-params",
     help="Expected nominal annual return. Use the investment income share and tax "
          "rate under Personal to describe how the return is taxed.",
 ) / 100
@@ -394,79 +394,81 @@ alt_return = st.sidebar.slider(
 # ---- Section 1: The property ------------------------------------
 st.sidebar.subheader("The property")
 price = st.sidebar.number_input("Purchase price ($)", 200_000, 5_000_000,
-                                step=25_000, key="price",
+                                step=25_000, value=DEFAULTS["price"], key="price", bind="query-params",
                                 help="Contract price of the home. Drives the loan size, "
                                      "property tax, and the comparable rent.")
 seller_credit = st.sidebar.number_input(
     "Seller concessions toward closing costs ($)", min_value=0, value=0, step=1_000,
-    key="seller_credit",
+    key="seller_credit", bind="query-params",
     help="Enter the lender-approved amount the seller will pay toward your closing fees. "
          "Enter gross fees under Financing. The credit applies up to those fees.",
 )
 onetime = st.sidebar.slider("One-time costs ($)", 0, 100_000,
-                            step=5_000, key="onetime",
+                            step=5_000, value=DEFAULTS["onetime"], key="onetime", bind="query-params",
                             help="Movers, immediate repairs, furniture — cash spent once "
                                  "at move-in, gone from the buy-side portfolio.")
-hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, key="hoa",
+hoa = st.sidebar.number_input("HOA ($/mo)", 0, 3_000, step=50, value=DEFAULTS["hoa"], key="hoa", bind="query-params",
                               help="Monthly homeowners-association dues, if any. Flat — "
                                    "does not grow in this model.")
 monthly_income = st.sidebar.number_input(
-    "Monthly income ($)", 0, 20_000, step=100, key="monthly_income",
+    "Monthly income ($)", 0, 20_000, step=100, value=DEFAULTS["monthly_income"], key="monthly_income", bind="query-params",
     help="Income the property generates for you as the owner — e.g. ADU or room rent. "
          "Buy-side only, grows with rent growth, stops at a forced sale. "
          "Enter net of taxes.",
 )
-derive_rent = st.sidebar.checkbox("Derive rent from price-to-rent ratio", key="derive_rent",
+st.sidebar.subheader("Rental alternative")
+derive_rent = st.sidebar.checkbox("Derive rent from price-to-rent ratio", value=DEFAULTS["derive_rent"], key="derive_rent", bind="query-params",
                                   help="On: rent for the comparable home = price ÷ ratio ÷ 12, "
                                        "so it tracks the purchase price. Off: type a rent "
                                        "you've actually seen on the market.")
+p2r = st.sidebar.slider(
+    "Price-to-rent ratio", 10.0, 45.0, step=0.5, value=DEFAULTS["p2r"], key="p2r", bind="query-params",
+    help="Purchase price ÷ annual rent for comparable homes. "
+         "A higher ratio implies lower comparable rent at the same purchase price.",
+)
 if derive_rent:
-    rent0 = rent_from_price(price, st.session_state["p2r"])
+    rent0 = rent_from_price(price, p2r)
+    st.sidebar.number_input("Monthly rent ($)", value=rent0, format="%.2f", disabled=True,
+                            help="Purchase price divided by the price-to-rent ratio and 12 months.")
 else:
-    rent0 = st.sidebar.number_input("Monthly rent ($)", 500, 30_000, step=100, key="rent0",
+    rent0 = st.sidebar.number_input("Monthly rent ($)", 500, 30_000, step=100, value=DEFAULTS["rent0"], key="rent0", bind="query-params", persist_state="session",
                                     help="Starting monthly rent for the comparable home; grows "
                                          "at the rent-growth rate each year.")
-st.sidebar.caption(f"Comparable rent: {fmtm(rent0)}/mo")
+rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
+                                step=0.25, value=DEFAULTS["rent_growth"], key="rent_growth", bind="query-params",
+                                help="Annual change in comparable rent and any owner rental income.") / 100
 
 # ---- Section 2: Financing ---------------------------------------
 st.sidebar.subheader("Financing")
 financing_mode = st.sidebar.radio(
     "Set financing by", ["Fixed loan size", "Down payment (%)", "Fixed down payment"],
-    key="financing_mode",
+    key="financing_mode", bind="query-params",
 )
-# Streamlit clears hidden widgets. Keep the user's last choice in each mode.
-financing_values = st.session_state.setdefault("financing_values", {
-    "down_pct": 50, "fixed_loan": 750_000, "fixed_down": 700_000,
-})
-down_pct = financing_values["down_pct"] / 100
+down_pct = 0.50
 fixed_loan = fixed_down = None
 if financing_mode == "Down payment (%)":
-    st.session_state.setdefault("down_pct", financing_values["down_pct"])
-    percent = st.sidebar.slider("Down payment (%)", 3, 100, step=1, key="down_pct")
-    financing_values["down_pct"] = percent
-    down_pct = percent / 100
+    down_pct = st.sidebar.slider("Down payment (%)", 3, 100, value=50, step=1, key="down_pct",
+                                 bind="query-params", persist_state="session") / 100
 elif financing_mode == "Fixed loan size":
-    st.session_state.setdefault("fixed_loan", financing_values["fixed_loan"])
-    fixed_loan = st.sidebar.number_input("Loan size ($)", min_value=0, step=10_000, key="fixed_loan")
-    financing_values["fixed_loan"] = fixed_loan
+    fixed_loan = st.sidebar.number_input("Loan size ($)", min_value=0, value=750_000, step=10_000,
+                                         key="fixed_loan", bind="query-params", persist_state="session")
 else:
-    st.session_state.setdefault("fixed_down", financing_values["fixed_down"])
-    fixed_down = st.sidebar.number_input("Down payment ($)", min_value=0, step=10_000, key="fixed_down")
-    financing_values["fixed_down"] = fixed_down
+    fixed_down = st.sidebar.number_input("Down payment ($)", min_value=0, value=700_000, step=10_000,
+                                         key="fixed_down", bind="query-params", persist_state="session")
 financing_summary = st.sidebar.empty()
 mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
-                              step=0.125, key="mort_rate",
+                              step=0.125, value=DEFAULTS["mort_rate"], key="mort_rate", bind="query-params",
                               help="Fixed note rate from your lender quote (not APR — "
                                    "lender fees belong in closing costs).") / 100
-term = st.sidebar.segmented_control("Term (years)", [15, 30], key="term",
+term = st.sidebar.segmented_control("Term (years)", [15, 30], default=DEFAULTS["term"], required=True, key="term", bind="query-params",
                                     help="Choose the term that matches the interest rate in your lender quote.") or DEFAULTS["term"]
 closing_pct = st.sidebar.slider("Closing costs (% of price)", 0.0, 5.0,
-                                step=0.25, key="closing_pct",
+                                step=0.25, value=DEFAULTS["closing_pct"], key="closing_pct", bind="query-params",
                                 help="Escrow, title, origination, inspection etc., paid in "
                                      "cash at closing on top of the down payment.") / 100
 
 basis_share = st.sidebar.slider(
-    "Closing costs eligible for home tax basis (%)", 0, 100, key="basis_share",
+    "Closing costs eligible for home tax basis (%)", 0, 100, value=DEFAULTS["basis_share"], key="basis_share", bind="query-params",
     help="Enter the eligible share of your buyer-paid closing costs. Examples include recording "
          "fees and owner's title insurance. Exclude loan origination fees and lender appraisals. "
          "The share applies after seller credits.",
@@ -475,54 +477,42 @@ basis_share = st.sidebar.slider(
 # ---- Section 3: The market --------------------------------------
 st.sidebar.subheader("The market")
 home_appr = st.sidebar.slider("Home appreciation (%/yr)", -10.0, 10.0,
-                              step=0.25, key="home_appr",
+                              step=0.25, value=DEFAULTS["home_appr"], key="home_appr", bind="query-params",
                               help="Assumed annual growth in the home's market value.") / 100
-rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
-                                step=0.25, key="rent_growth",
-                                help="Annual change in comparable rent and any owner rental income.") / 100
-p2r = st.sidebar.slider(
-    "Price-to-rent ratio", 10.0, 45.0, step=0.5, key="p2r",
-    help="Purchase price ÷ annual rent for comparable homes. "
-         "A higher ratio implies lower comparable rent at the same purchase price.",
-)
-st.sidebar.caption(
-    f"At ratio {p2r:g}, a {fmtm(price)} home rents for "
-    f"≈ {fmtm(rent_from_price(price, p2r))}/mo"
-)
 prop_tax = st.sidebar.slider("Property tax (% of price)", 0.5, 2.5,
-                             step=0.05, key="prop_tax",
+                             step=0.05, value=DEFAULTS["prop_tax"], key="prop_tax", bind="query-params",
                              help="Enter the property's estimated first-year effective rate. "
                                   "The model assumes 2% annual growth in assessed value.") / 100
 insurance = st.sidebar.slider("Insurance (% of value/yr)", 0.0, 1.0,
-                              step=0.05, key="insurance",
+                              step=0.05, value=DEFAULTS["insurance"], key="insurance", bind="query-params",
                               help="Homeowners insurance as a share of current market "
                                    "value, per year.") / 100
 maintenance = st.sidebar.slider("Maintenance (% of value/yr)", 0.0, 3.0,
-                                step=0.25, key="maintenance",
+                                step=0.25, value=DEFAULTS["maintenance"], key="maintenance", bind="query-params",
                                 help="Repairs and upkeep as a share of current market "
                                      "value per year; 1% is the common rule of thumb.") / 100
 selling_pct = st.sidebar.slider("Selling costs (% of value)", 0.0, 10.0,
-                                step=0.5, key="selling_pct",
+                                step=0.5, value=DEFAULTS["selling_pct"], key="selling_pct", bind="query-params",
                                 help="Agent commissions + seller closing costs, subtracted "
                                      "from home value in every 'if sold' figure.") / 100
 
 # ---- Section 4: Personal ----------------------------------------
 st.sidebar.subheader("Personal")
-horizon = st.sidebar.slider("Horizon (years)", 1, 30, key="horizon",
+horizon = st.sidebar.slider("Horizon (years)", 1, 30, value=DEFAULTS["horizon"], key="horizon", bind="query-params",
                             help="When the two scenarios are compared: both are valued "
                                  "'if sold' at this point.")
 filing_status = st.sidebar.segmented_control(
-    "Filing status", ["Single", "Married"], key="filing_status",
+    "Filing status", ["Single", "Married"], default=DEFAULTS["filing_status"], required=True, key="filing_status", bind="query-params",
     help="Sets the §121 home-sale exclusion: the first \\$250k (single) / \\$500k "
          "(married filing jointly) of gain on your home is tax-free once you've owned "
          "and lived in it for 2 years. Gain above that is taxed at the capital-gains "
          "rate in every 'if sold' figure.") or DEFAULTS["filing_status"]
 home_gain_exclusion = 500_000 if filing_status == "Married" else 250_000
 federal_rate = st.sidebar.slider("Federal marginal tax rate (%)", 0.0, 55.0,
-                                step=0.1, key="federal_rate") / 100
+                                step=0.1, value=DEFAULTS["federal_rate"], key="federal_rate", bind="query-params") / 100
 ca_rate = st.sidebar.slider("California marginal tax rate (%)", 0.0, 15.0,
-                            step=0.1, key="ca_rate") / 100
-deduct = st.sidebar.checkbox("Deduct mortgage interest", key="deduct",
+                            step=0.1, value=DEFAULTS["ca_rate"], key="ca_rate", bind="query-params") / 100
+deduct = st.sidebar.checkbox("Deduct mortgage interest", value=DEFAULTS["deduct"], key="deduct", bind="query-params",
                              help="Assumes itemizing on qualifying acquisition debt. "
                                   "Federal interest uses up to $750,000 of loan balance "
                                   "and California interest uses up to $1,000,000.")
@@ -534,23 +524,23 @@ if deduct:
                  "If you would otherwise take the standard deduction, the extra savings may be smaller.")
         annual_tax_limit = st.number_input(
             "Annual tax savings limit ($)", min_value=0, value=None, step=100,
-            placeholder="Use the model estimate", key="annual_tax_limit",
+            placeholder="Use the model estimate", key="annual_tax_limit", bind="query-params",
             help="Optional. Enter the estimated yearly reduction in your tax bill from mortgage "
                  "interest compared with renting. Monthly savings are limited to one twelfth "
                  "of this amount and fall if deductible interest falls.",
         )
 income_share = st.sidebar.slider(
-    "Investment return paid as interest or dividends (%)", 0, 100, key="income_share",
+    "Investment return paid as interest or dividends (%)", 0, 100, value=DEFAULTS["income_share"], key="income_share", bind="query-params",
     help="Use 100% for a savings account. Use 0% for an investment whose entire return "
          "is price appreciation. For a mixed portfolio, enter the income share of total return.",
 ) / 100
 inv_tax = st.sidebar.slider(
-    "Tax rate on investment income (%)", 0.0, 50.0, step=1.0, key="inv_tax",
+    "Tax rate on investment income (%)", 0.0, 50.0, step=1.0, value=DEFAULTS["inv_tax"], key="inv_tax", bind="query-params",
     help="Interest and dividends are reinvested after this tax. The remaining return "
          "is price appreciation, taxed when sold.",
 ) / 100
 cap_gains = st.sidebar.slider("Capital gains at sale (%)", 0.0, 45.0, step=1.0,
-                              key="cap_gains",
+                              value=DEFAULTS["cap_gains"], key="cap_gains", bind="query-params",
                               help="Applied in all 'if sold' figures to unrealized portfolio "
                                    "gains (value − tax basis) in both scenarios, and to the "
                                    "home's gain above the §121 exclusion in the buy scenario.") / 100
@@ -1006,7 +996,7 @@ def render_trace(res, selling_pct):
     # ---- Section 3: Month-by-month trace ----
     st.subheader("Month-by-month trace")
     st.caption("One row per period, like a spreadsheet — balances and cash flows for the wealth comparison.")
-    gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly",
+    gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly", key="granularity", bind="query-params", required=True,
                                 label_visibility="collapsed",
                                 help="Yearly sums the flows and shows end-of-year "
                                      "balances; Monthly shows every row.")
@@ -1378,13 +1368,13 @@ with tab_explorer:
                "Retirement runway is capped at 100 years.")
 
     sc1, sc2 = st.columns(2)
-    x_key = sc1.selectbox("X axis", list(SWEEP_PARAMS), key="sweep_x",
+    x_key = sc1.selectbox("X axis", list(SWEEP_PARAMS), index=list(SWEEP_PARAMS).index(DEFAULTS["sweep_x"]), key="sweep_x", bind="query-params",
                           format_func=lambda k: SWEEP_PARAMS[k].label,
                           help="Input swept along the horizontal axis. Bounded inputs "
                                "sweep their full slider range; open-ended dollar "
                                "inputs sweep from a sane floor up to 2× the current "
                                "sidebar value.")
-    y_key = sc2.selectbox("Y axis", list(SWEEP_PARAMS), key="sweep_y",
+    y_key = sc2.selectbox("Y axis", list(SWEEP_PARAMS), index=list(SWEEP_PARAMS).index(DEFAULTS["sweep_y"]), key="sweep_y", bind="query-params",
                           format_func=lambda k: SWEEP_PARAMS[k].label,
                           help="Input swept along the vertical axis; same automatic "
                                "ranges as the X axis.")
@@ -1523,7 +1513,20 @@ def buy_and_rent(buy, rent):
     return f"Buy {fmtm(buy)}  \nRent {fmtm(rent)}"
 
 
-with tab_assumptions:
+with tab_assumptions, st.container(key="assumption_tables"):
+    st.html("""
+        <style>
+        .st-key-assumption_tables table {
+            table-layout: fixed;
+            width: 100%;
+            min-width: 40rem;
+        }
+        .st-key-assumption_tables th:nth-child(1) { width: 23%; }
+        .st-key-assumption_tables th:nth-child(2) { width: 27%; }
+        .st-key-assumption_tables th:nth-child(3) { width: 18%; }
+        .st-key-assumption_tables th:nth-child(4) { width: 32%; }
+        </style>
+    """)
     st.caption("Real Value shows year-one totals, closing-day amounts, or month-12 balances as labeled. "
                "A dash marks settings with no separate year-one amount.")
     if not res.feasible:
@@ -1636,3 +1639,67 @@ with tab_assumptions:
          f"Month {sale}" if sale is not None and sale <= 12 else "None in year one",
          "Settle owner costs at month-end and begin renting the next month."),
     ])
+
+# Snapshot the effective controls, including defaults, so a copied link stands on its own.
+share_keys = [key for key in DEFAULTS if key not in ("sweep_x", "sweep_y", "rent0")]
+share_keys += ["seller_credit", "financing_mode"]
+share_keys.append({"Fixed loan size": "fixed_loan", "Fixed down payment": "fixed_down",
+                   "Down payment (%)": "down_pct"}[financing_mode])
+if not derive_rent:
+    share_keys.append("rent0")
+if annual_tax_limit is not None:
+    share_keys.append("annual_tax_limit")
+params = {key: st.session_state[key] for key in share_keys}
+params.update(sweep_x=SWEEP_PARAMS[x_key].label, sweep_y=SWEEP_PARAMS[y_key].label)
+if res.feasible:
+    params["granularity"] = st.session_state["granularity"]
+location = urlsplit(st.context.url or "http://localhost:8501/")
+# Community Cloud may render the app inside its internal /~/+/ iframe.
+share_path = "/" if (location.hostname or "").endswith(".streamlit.app") else location.path
+share_url = urlunsplit((location.scheme, location.netloc, share_path, urlencode(params), ""))
+copy_share_link = st.components.v2.component(
+    "copy_share_link",
+    html='<button type="button" aria-live="polite">Copy share link</button>',
+    css="""
+        button {
+            background: var(--st-background-color);
+            color: var(--st-text-color);
+            border: 1px solid var(--st-border-color);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.85rem;
+            font: inherit;
+            cursor: pointer;
+        }
+        button:hover, button:focus-visible { border-color: var(--st-primary-color); }
+    """,
+    js="""
+        export default function({parentElement, data}) {
+            const button = parentElement.querySelector("button");
+            let timer;
+            button.textContent = "Copy share link";
+            button.onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(data);
+                } catch {
+                    const field = document.createElement("textarea");
+                    field.value = data;
+                    parentElement.appendChild(field);
+                    field.select();
+                    const copied = document.execCommand("copy");
+                    field.remove();
+                    button.focus();
+                    if (!copied) {
+                        window.prompt("Copy share link", data);
+                        return;
+                    }
+                }
+                button.textContent = "Copied!";
+                clearTimeout(timer);
+                timer = setTimeout(() => { button.textContent = "Copy share link"; }, 1800);
+            };
+            return () => { clearTimeout(timer); button.onclick = null; };
+        }
+    """,
+)
+with share_slot:
+    copy_share_link(data=share_url, key="copy_scenario")

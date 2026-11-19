@@ -225,3 +225,37 @@ def test_concessions_show_offered_and_applied_credit():
     assert deal.loc["Buyer-paid closing costs", "Real Value"] == "$0"
     closing = at.tabs[2].dataframe[0].value.set_index("Item")
     assert closing.loc["+ Seller credit applied", "Amount"] == "$21,000"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"p2r": 19.5, "filing_status": "Married", "term": 15, "seller_credit": 8000,
+     "fixed_loan": 600_000, "annual_tax_limit": 0, "sweep_x": "term", "sweep_y": "cap_gains"},
+    {"derive_rent": False, "rent0": 3150, "deduct": False, "financing_mode": "Fixed down payment",
+     "fixed_down": 530_000, "granularity": "Monthly", "sweep_x": "mort_rate"},
+    {"financing_mode": "Down payment (%)", "down_pct": 36, "horizon": 6},
+])
+def test_shared_link_restores_scenario_in_fresh_session(overrides):
+    from urllib.parse import parse_qs, urlsplit
+
+    original = _run(overrides)
+    link = json.loads(original.sidebar.get("bidi_component")[0].proto.json)
+    restored = AppTest.from_file(APP, default_timeout=TIMEOUT)
+    restored.query_params.update(parse_qs(urlsplit(link).query))
+    restored.run()
+    assert not restored.exception
+    assert json.loads(restored.sidebar.get("bidi_component")[0].proto.json) == link
+    for key, value in overrides.items():
+        assert restored.session_state[key] == value
+    assert [m.value for m in restored.metric] == [m.value for m in original.metric]
+
+
+def test_monthly_rent_tracks_ratio_and_preserves_manual_entry():
+    at = _run({"derive_rent": False, "rent0": 3200})
+    assert not at.number_input(key="rent0").disabled
+    at.checkbox(key="derive_rent").check().run()
+    at.slider(key="p2r").set_value(20.0).run()
+    rent, = [field for field in at.sidebar.number_input if field.label == "Monthly rent ($)"]
+    assert rent.disabled
+    assert rent.value == pytest.approx(at.number_input(key="price").value / 20 / 12)
+    at.checkbox(key="derive_rent").uncheck().run()
+    assert at.number_input(key="rent0").value == 3200
