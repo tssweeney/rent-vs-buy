@@ -13,7 +13,7 @@ differs.
 
 Simplifications (documented in the app):
 - Investment taxes are split in two: a small annual drag on returns
-  (dividends/turnover, r_after = r * (1 - drag)) plus capital-gains tax on
+  on distributed income, which is reinvested after tax, plus capital-gains tax on
   embedded gains (value - cost basis) applied in all "if sold" values.
 - Mortgage interest deduction: a single combined marginal rate applied to
   interest on the deductible share of the balance (cap / balance, <= 1).
@@ -21,7 +21,7 @@ Simplifications (documented in the app):
 - Property tax assessed value grows at the Prop 13 cap, independent of market
   value.
 - "Liquidation" net worth subtracts selling costs on the home AND capital-gains
-  tax on the home sale. Home cost basis = price + buy closing costs (one-time /
+  tax on the home sale. Home cost basis = price + eligible closing costs (one-time /
   moving costs are not basis). Gain = value x (1 - selling costs) - basis. The
   Sec. 121 exclusion ($250k single / $500k married, `home_gain_exclusion`)
   applies only once the home has been owned and used for >= 24 months; before
@@ -30,8 +30,7 @@ Simplifications (documented in the app):
   Mark-to-market net worth stays untaxed.
 """
 
-from dataclasses import dataclass, field, replace
-import math
+from dataclasses import dataclass
 
 
 @dataclass
@@ -75,6 +74,24 @@ class Assumptions:
 
     # property-generated income (buy side only)
     monthly_income: float = 0.0   # e.g. ADU rent; grows with rent_growth; stops at forced sale
+
+    closing_basis_share: float = 0.0  # fraction of total closing costs eligible for basis
+    investment_income_share: float | None = None  # fraction of return distributed as income
+
+
+def monthly_portfolio_rates(a: Assumptions) -> tuple[float, float]:
+    """Monthly net growth and reinvested income, each per dollar of opening value."""
+    share = a.investment_income_share
+    if share is None:
+        # Legacy scenarios specified only an annual tax rate.
+        share = 1.0 if a.investment_tax_drag else 0.0
+    net_fraction = 1 - share * a.investment_tax_drag
+    growth = (1 + a.alt_return_annual * net_fraction) ** (1 / 12) - 1
+    if net_fraction == 0:
+        return 0.0, 0.0
+    reinvested = growth * share * (1 - a.investment_tax_drag) / net_fraction
+    return growth, reinvested
+
 
 
 @dataclass
@@ -126,8 +143,8 @@ MONTHS_FOR_121 = 24   # Sec. 121 ownership + use test (2 of the last 5 years)
 
 
 def home_basis(a: Assumptions) -> float:
-    """Home cost basis: purchase price + buy-side closing costs."""
-    return a.price * (1 + a.closing_buy_pct)
+    """Home cost basis: purchase price + eligible buy-side closing costs."""
+    return a.price * (1 + a.closing_buy_pct * a.closing_basis_share)
 
 
 def home_sale_tax(a: Assumptions, home_value: float, months_held: int) -> float:
@@ -174,8 +191,7 @@ def simulate(a: Assumptions) -> Result:
     r_m = a.mortgage_rate / 12
 
     # after-tax monthly investment growth
-    r_after = a.alt_return_annual * (1 - a.investment_tax_drag)
-    g_inv = (1 + r_after) ** (1 / 12) - 1
+    g_inv, income_rate = monthly_portfolio_rates(a)
     g_home = (1 + a.home_appreciation) ** (1 / 12) - 1
 
     home = a.price
@@ -222,6 +238,8 @@ def simulate(a: Assumptions) -> Result:
 
     for m in range(1, n + 1):
         # grow portfolios first, then apply this month's contributions
+        basis_buy += pf_buy * income_rate
+        basis_rent += pf_rent * income_rate
         pf_buy *= 1 + g_inv
         pf_rent *= 1 + g_inv
         home *= 1 + g_home
@@ -356,7 +374,7 @@ class RunwayResult:
         (home_value × (1 − selling_cost_pct) − loan_balance − home-sale tax)
         are injected into the liquid portfolio and the owner becomes a renter
         at the then-current market rent.  Home-sale tax uses the same rule as
-        simulate(): gain above basis (price + closing costs), less the Sec. 121
+        simulate(): gain above basis (price + eligible closing costs), less the Sec. 121
         exclusion if months held (= sale_month) >= 24, times cap_gains_rate.
         The runway clock continues until this combined portfolio also depletes.
 
@@ -418,8 +436,7 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
     r_m = a.mortgage_rate / 12
 
     # --- Shared investment growth ---
-    r_after = a.alt_return_annual * (1 - a.investment_tax_drag)
-    g_inv = (1 + r_after) ** (1 / 12) - 1
+    g_inv, income_rate = monthly_portfolio_rates(a)
     g_home = (1 + a.home_appreciation) ** (1 / 12) - 1
 
     # Buy starting state
@@ -470,7 +487,7 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
 
             # No interest-deduction benefit (no income to deduct against)
             gross_cost_buy = payment + prop_tax + insurance + maintenance + a.hoa_monthly + pmi + extra_monthly
-            # Income offsets the gross cost; need can go <= 0 (portfolio just grows)
+            # Income offsets the gross cost; a negative need is invested
             need_buy = gross_cost_buy - income
         else:
             # Post-sale: buy scenario now rents at the same rent rate the rent scenario uses
@@ -488,11 +505,12 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
 
         # ---- buy portfolio withdrawal ----
         if depleted_buy_month is None:
+            basis_buy += liq_buy * income_rate
             liq_buy *= 1 + g_inv
             if need_buy <= 0:
-                # Income exceeds gross costs — no withdrawal needed; portfolio just grows.
-                # The surplus is NOT deposited (conservative/simple).
-                pass
+                # Net property income left after bills is new investment capital.
+                liq_buy -= need_buy
+                basis_buy -= need_buy
             else:
                 if liq_buy > 0:
                     gain_frac = max(0.0, 1.0 - basis_buy / liq_buy)
@@ -500,41 +518,21 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
                 else:
                     sell_buy = need_buy
 
-                if sell_buy >= liq_buy and not sold_house:
-                    # Owner's cash insufficient — sell the house and become a renter
-                    leftover = max(liq_buy, 0.0)
+                if sell_buy > liq_buy and not sold_house:
+                    # Liquidate the existing portfolio, paying tax only on its gains.
+                    cash = liq_buy - max(0.0, liq_buy - basis_buy) * a.cap_gains_rate
                     proceeds = (home * (1.0 - a.selling_cost_pct) - bal
                                 - home_sale_tax(a, home, m))
-                    # Edge case: proceeds may be negative (underwater), clamp to 0
-                    proceeds = max(proceeds, 0.0)
-                    total = leftover + proceeds
                     sale_month = m
                     sale_proceeds_val = proceeds
                     sold_house = True
-                    bal = 0.0
-
-                    # Post-sale need is rent (updated to current market rent)
-                    need_buy = rent + extra_monthly
-
-                    # Can the combined total cover this month's need as a renter?
-                    if total > 0:
-                        gain_frac2 = max(0.0, 1.0 - basis_buy / total) if total > 0 else 0.0
-                        sell_buy2 = need_buy / (1.0 - a.cap_gains_rate * gain_frac2)
-                    else:
-                        sell_buy2 = need_buy
-
-                    if sell_buy2 >= total:
-                        # Depleted immediately (absurdly rare edge case)
-                        liq_buy = 0.0
-                        basis_buy = 0.0
+                    # The month-end loan balance already reflects this month's
+                    # payment. Settle the owner's full bill before investing the
+                    # remaining after-tax cash. Rent begins next month.
+                    liq_buy = max(0.0, cash + proceeds - need_buy)
+                    basis_buy = liq_buy
+                    if liq_buy == 0:
                         depleted_buy_month = m
-                    else:
-                        # Inject proceeds into portfolio; sale cash is post-tax, add to basis
-                        basis_buy = basis_buy + proceeds  # leftover basis preserved + post-tax proceeds
-                        liq_buy = total
-                        # Withdraw this month's rent need
-                        basis_buy -= basis_buy * (sell_buy2 / liq_buy)
-                        liq_buy -= sell_buy2
 
                 elif sell_buy >= liq_buy and sold_house:
                     # Already a renter (post-sale phase) — final depletion
@@ -547,6 +545,7 @@ def runway(a: Assumptions, extra_monthly: float = 0.0, max_years: int = 100) -> 
 
         # ---- rent portfolio withdrawal ----
         if depleted_rent_month is None:
+            basis_rent += liq_rent * income_rate
             liq_rent *= 1 + g_inv
             if liq_rent > 0:
                 gain_frac = max(0.0, 1.0 - basis_rent / liq_rent)

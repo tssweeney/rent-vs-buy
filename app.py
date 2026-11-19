@@ -21,10 +21,10 @@ st.set_page_config(page_title="Rent vs. Buy", page_icon=":material/home_work:",
 DEFAULTS = {
     # sidebar
     "capital": 1_500_000, "horizon": 10,
-    "alt_return": 3.5, "inv_tax": 0.0, "cap_gains": 25.0,
+    "alt_return": 3.5, "income_share": 0, "inv_tax": 25.0, "cap_gains": 25.0,
     "home_appr": 5.5, "rent_growth": 4.0,
     "mort_rate": 6.5, "term": 30,
-    "closing_pct": 1.5, "onetime": 10_000, "selling_pct": 6.0,
+    "basis_share": 0, "closing_pct": 1.5, "onetime": 10_000, "selling_pct": 6.0,
     "prop_tax": 1.15, "insurance": 0.25, "maintenance": 1.0, "hoa": 250,
     "marginal": 42.0, "deduct": True, "filing_status": "Single",
     "p2r": 28.0,
@@ -161,14 +161,7 @@ def liquid_portfolio_fig(rwy, fmt_fn, height=340):
     """Liquid portfolio over time for the runway scenario."""
     buy_dep = rwy.depleted_buy_month
     rent_dep = rwy.depleted_rent_month
-    later_dep = max(
-        buy_dep if buy_dep is not None else 0,
-        rent_dep if rent_dep is not None else 0,
-    )
-    if buy_dep is None and rent_dep is None:
-        cutoff_m = 40 * 12
-    else:
-        cutoff_m = min(later_dep + 3 * 12, len(rwy.months) - 1)
+    cutoff_m = rwy.months[-1]
 
     plot_months = [m for m in rwy.months if m <= cutoff_m]
     plot_yrs = [m / 12 for m in plot_months]
@@ -197,7 +190,7 @@ def liquid_portfolio_fig(rwy, fmt_fn, height=340):
             text=[f"sold house<br>{fmt_fn(rwy.sale_proceeds)}"],
             textposition="top center",
             showlegend=False,
-            hovertemplate=f"Yr {{x:.1f}}: house sold, proceeds {fmt_fn(rwy.sale_proceeds)}<extra></extra>",
+            hovertemplate=f"Yr %{{x:.1f}}: house sold, proceeds {fmt_fn(rwy.sale_proceeds)}<extra></extra>",
         ))
 
     if buy_dep is not None and buy_dep <= cutoff_m:
@@ -263,7 +256,7 @@ def runway_sweep_fig(sweep_data, rent_runway_months, height=320):
 
 @st.cache_data(show_spinner="Computing down-payment optimization curves...")
 def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
-    """Sweep down payment 0–100% in 5% steps at the current price.
+    """Sweep down payment at 3% and 5% increments through 100% at the current price.
 
     Returns three parallel lists (one entry per feasible down %):
       wealth_curve  : list of (down_pct_int, breakeven_yr | None)
@@ -276,7 +269,7 @@ def _down_pct_sweep(base_a: Assumptions, price_v: float, rent_v: float):
     cashflow_curve = []
     runway_curve = []
 
-    for d_int in range(0, 101, 5):
+    for d_int in (3, *range(5, 101, 5)):
         d = d_int / 100
         upfront_d = price_v * d + price_v * base_a.closing_buy_pct + base_a.other_onetime_costs
         if upfront_d > base_a.capital:
@@ -309,7 +302,7 @@ def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240, best="min"
     """Compact line+marker chart for a single down-payment optimization curve.
 
     curve: list of (down_pct_int, value | None)
-    Gaps (None values) are excluded; a connected line is drawn through valid points.
+    Undefined breakevens appear as gaps.
     best: "min" (earlier breakeven is better) or "max" — the optimum gets a gold star.
     """
     xs = [d for d, v in curve if v is not None]
@@ -317,7 +310,7 @@ def _down_sweep_line_fig(curve, yaxis_title, hover_label, height=240, best="min"
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=xs, y=ys, mode="lines+markers",
+        x=[d for d, _ in curve], y=[v for _, v in curve], mode="lines+markers",
         line=dict(width=2),
         marker=dict(size=6),
         showlegend=False,
@@ -358,9 +351,8 @@ capital = st.sidebar.number_input("Investable capital ($)", 100_000, 10_000_000,
 alt_return = st.sidebar.slider(
     "Investment return (%, pre-tax)", 0.0, 12.0,
     step=0.25, key="alt_return",
-    help="Default (3.5%) represents a high-yield-savings-style safe return. "
-         "If you plan to hold equities, raise this — historically stocks have "
-         "returned ~7–10% nominal before tax.",
+    help="Expected nominal annual return. Use the investment income share and tax "
+         "rate under Personal to describe how the return is taxed.",
 ) / 100
 
 # ---- Section 1: The property ------------------------------------
@@ -406,40 +398,40 @@ mort_rate = st.sidebar.slider("Mortgage rate (%)", 3.0, 9.0,
                               help="Fixed note rate from your lender quote (not APR — "
                                    "lender fees belong in closing costs).") / 100
 term = st.sidebar.segmented_control("Term (years)", [15, 30], key="term",
-                                    help="Loan length. 15-year loans usually price 0.5–0.75% "
-                                         "below 30-year but roughly double the principal "
-                                         "portion of P&I.") or DEFAULTS["term"]
+                                    help="Choose the term that matches the interest rate in your lender quote.") or DEFAULTS["term"]
 closing_pct = st.sidebar.slider("Closing costs (% of price)", 0.0, 5.0,
                                 step=0.25, key="closing_pct",
                                 help="Escrow, title, origination, inspection etc., paid in "
                                      "cash at closing on top of the down payment.") / 100
 
+basis_share = st.sidebar.slider(
+    "Closing costs eligible for home tax basis (%)", 0, 100, key="basis_share",
+    help="Enter the eligible share of your total closing costs. Examples include recording "
+         "fees and owner's title insurance. Exclude loan origination fees and lender appraisals. "
+         "All closing costs are still paid in cash.",
+) / 100
+
 # ---- Section 3: The market --------------------------------------
 st.sidebar.subheader("The market")
 home_appr = st.sidebar.slider("Home appreciation (%/yr)", 0.0, 10.0,
                               step=0.25, key="home_appr",
-                              help="Nominal annual growth of the home's market value. "
-                                   "Case-Shiller San Diego compounded ≈5.8%/yr over "
-                                   "1987–2025; default is a slightly conservative 5.5%.") / 100
+                              help="Assumed annual growth in the home's market value.") / 100
 rent_growth = st.sidebar.slider("Rent growth (%/yr)", 0.0, 10.0,
                                 step=0.25, key="rent_growth",
-                                help="Annual rent increases in the rent scenario. San Diego "
-                                     "long run ≈4%; recent years 2.5–3.5%.") / 100
+                                help="Annual change in comparable rent and any owner rental income.") / 100
 p2r = st.sidebar.slider(
     "Price-to-rent ratio", 10.0, 45.0, step=0.5, key="p2r",
     help="Purchase price ÷ annual rent for comparable homes. "
-         "Higher = buying is expensive relative to renting. "
-         "San Diego is roughly 25–30.",
+         "A higher ratio implies lower comparable rent at the same purchase price.",
 )
 st.sidebar.caption(
-    f"At ratio {p2r:.0f}, a {fmtm(price)} home rents for "
+    f"At ratio {p2r:g}, a {fmtm(price)} home rents for "
     f"≈ {fmtm(rent_from_price(price, p2r))}/mo"
 )
 prop_tax = st.sidebar.slider("Property tax (% of price)", 0.5, 2.5,
                              step=0.05, key="prop_tax",
-                             help="First-year effective rate on the purchase price "
-                                  "(San Diego ≈1.1–1.25% incl. Mello-Roos/bonds). The "
-                                  "assessed value then grows only 2%/yr under Prop 13.") / 100
+                             help="Enter the property's estimated first-year effective rate. "
+                                  "The model assumes 2% annual growth in assessed value.") / 100
 insurance = st.sidebar.slider("Insurance (% of value/yr)", 0.0, 1.0,
                               step=0.05, key="insurance",
                               help="Homeowners insurance as a share of current market "
@@ -468,31 +460,35 @@ home_gain_exclusion = 500_000 if filing_status == "Married" else 250_000
 marginal = st.sidebar.slider("Marginal tax rate (%)", 0.0, 55.0,
                              step=1.0, key="marginal",
                              help="Federal + California rate on your last dollar of income; "
-                                  "sets the value of the mortgage-interest deduction. Should "
-                                  "match your filing status: ~42% around \\$300k single in CA, "
-                                  "~33% around \\$300k married filing jointly.") / 100
+                                  "sets the estimated value of deductible mortgage interest.") / 100
 deduct = st.sidebar.checkbox("Deduct mortgage interest", key="deduct",
                              help="Reduces the owner's monthly cost by marginal rate × "
                                   "interest on the first $750k of loan balance. Assumes "
                                   "you itemize.")
+income_share = st.sidebar.slider(
+    "Investment return paid as interest or dividends (%)", 0, 100, key="income_share",
+    help="Use 100% for a savings account. Use 0% for an investment whose entire return "
+         "is price appreciation. For a mixed portfolio, enter the income share of total return.",
+) / 100
 inv_tax = st.sidebar.slider(
-    "Annual tax on returns (%)", 0.0, 50.0, step=1.0,
-    key="inv_tax",
-    help="Applies yearly (like HYSA interest or dividends taxed each year). "
-         "Leave at 0 to tax all growth at sale instead.",
+    "Tax rate on investment income (%)", 0.0, 50.0, step=1.0, key="inv_tax",
+    help="Interest and dividends are reinvested after this tax. The remaining return "
+         "is price appreciation, taxed when sold.",
 ) / 100
 cap_gains = st.sidebar.slider("Capital gains at sale (%)", 0.0, 45.0, step=1.0,
                               key="cap_gains",
                               help="Applied in all 'if sold' figures to unrealized portfolio "
-                                   "gains (value − contributions) in both scenarios, and to the "
+                                   "gains (value − tax basis) in both scenarios, and to the "
                                    "home's gain above the §121 exclusion in the buy scenario.") / 100
 
 base = Assumptions(
     capital=capital, horizon_years=horizon,
-    alt_return_annual=alt_return, investment_tax_drag=inv_tax, cap_gains_rate=cap_gains,
+    alt_return_annual=alt_return, investment_tax_drag=inv_tax,
+    investment_income_share=income_share, cap_gains_rate=cap_gains,
     home_gain_exclusion=home_gain_exclusion,
     mortgage_rate=mort_rate, term_years=term,
-    closing_buy_pct=closing_pct, other_onetime_costs=onetime, selling_cost_pct=selling_pct,
+    closing_buy_pct=closing_pct, closing_basis_share=basis_share,
+    other_onetime_costs=onetime, selling_cost_pct=selling_pct,
     home_appreciation=home_appr, property_tax_rate=prop_tax,
     insurance_rate=insurance, maintenance_rate=maintenance, hoa_monthly=hoa,
     marginal_tax_rate=marginal, include_interest_deduction=deduct,
@@ -559,22 +555,25 @@ with tab_overview:
             _cash_be_label = f"year {_cash_be_month / 12:.1f}"
 
         # --- Metric 5: Forced sale ---
-        _sale_label = f"yr {rwy.sale_month / 12:.1f}" if rwy.sale_month is not None else "never"
+        _sale_label = f"yr {rwy.sale_month / 12:.1f}" if rwy.sale_month is not None else "None in 100 yrs"
 
         # --- Metric 6: Buy runway advantage ---
-        _CAP = 1200  # 100-year cap in months
-        _buy_runway_m = rwy.depleted_buy_month if rwy.depleted_buy_month is not None else _CAP
-        _rent_runway_m = rwy.depleted_rent_month if rwy.depleted_rent_month is not None else _CAP
-        _runway_adv_yrs = (_buy_runway_m - _rent_runway_m) / 12
-        _both_sustainable = (rwy.depleted_buy_month is None and rwy.depleted_rent_month is None)
-        if _both_sustainable:
-            _runway_adv_label = "—"
-            _runway_adv_delta = "both sustainable"
-            _runway_adv_delta_color = "off"
+        buy_end, rent_end = rwy.depleted_buy_month, rwy.depleted_rent_month
+        _runway_adv_delta_color = "off"
+        if buy_end is None and rent_end is None:
+            _runway_adv_label, _runway_adv_delta = "—", "both funded through year 100"
+        elif buy_end is None or rent_end is None:
+            known_end = rent_end if buy_end is None else buy_end
+            bound_months = 1200 - known_end
+            sign = ">" if buy_end is None else "<"
+            signed_bound = bound_months if buy_end is None else -bound_months
+            _runway_adv_label = f"{sign} {signed_bound} mo"
+            _runway_adv_delta = "buy lasts longer" if buy_end is None else "rent lasts longer"
+        elif buy_end == rent_end:
+            _runway_adv_label, _runway_adv_delta = "0 yrs", "same depletion month"
         else:
-            _runway_adv_label = f"{_runway_adv_yrs:+.1f} yrs"
-            _runway_adv_delta = "buy lasts longer" if _runway_adv_yrs > 0 else "rent lasts longer"
-            _runway_adv_delta_color = "normal" if _runway_adv_yrs > 0 else "inverse"
+            _runway_adv_label = f"{(buy_end - rent_end) / 12:+.1f} yrs"
+            _runway_adv_delta = "buy lasts longer" if buy_end > rent_end else "rent lasts longer"
 
         # ================================================================ Overview — unified single-screen columns
         _W_CHART_H = 380   # Wealth chart height
@@ -647,25 +646,23 @@ with tab_overview:
             # Hero pair
             _cf_h1, _cf_h2 = st.columns(2, gap="small")
             _cf_h1.metric("Monthly cost vs rent (mo 1)", fmt(_cost_diff),
-                          delta="buy costs more/mo" if _cost_diff > 0 else "buy costs less/mo",
+                          delta=("buy costs more/mo" if _cost_diff > 0 else
+                                 "buy costs less/mo" if _cost_diff < 0 else "same monthly cost"),
                           delta_color="off", border=True, height=MCH,
                           help="Gross owner cost minus rent in month 1 — cash actually out the door. "
-                               "The interest deduction arrives at tax filing and is counted in net worth, "
-                               "not netted into this monthly figure.")
+                               "Includes net property income. The wealth model credits the estimated "
+                               "interest deduction monthly.")
             _cf_h2.metric("Monthly cost breakeven", _cash_be_label, border=True, height=MCH,
                           help="First month from which the gross owner cost (before the interest "
                                "deduction) stays at or below rent through the horizon — i.e., when "
                                "owning becomes and stays cheaper month-to-month "
-                               "on a cash-out-the-door basis. The deduction arrives annually at "
-                               "tax time and is counted in net worth, not subtracted here.")
+                               "after any property income.")
             # Supplementary row (1×2)
             _cf_r1c1, _cf_r1c2 = st.columns(2, gap="small")
             _cf_r1c1.metric("Own cost (mo 1)", fmt(_own_cost_m1_gross), border=True, height=MCH,
                             help="P&I + property tax + insurance + maintenance + HOA + PMI, "
-                                 "before the interest deduction (which arrives annually at tax "
-                                 "time and is counted in net worth). When monthly income is set, "
-                                 "it is already netted into the 'Own cost (net)' line and flows "
-                                 "through all charts and the net worth calculation.")
+                                 "less any property income. The wealth model separately credits "
+                                 "the estimated mortgage-interest deduction monthly.")
             _cf_r1c2.metric("Rent (mo 1)", fmt(_rent_m1), border=True, height=MCH,
                             help="Month-1 rent for the comparable home. Grows at the rent-growth "
                                  "rate each year.")
@@ -674,7 +671,7 @@ with tab_overview:
                 st.plotly_chart(monthly_cost_fig(res, _yrs, height=_CF_CHART_H), key="ov_monthly_cost")
                 with st.expander("About this chart"):
                     st.markdown("Bands stack to gross cost; the net line subtracts the "
-                                "interest deduction. Principal builds equity — cash out, "
+                                "interest deduction and property income. Principal builds equity — cash out, "
                                 "but not lost.")
             with st.container(border=True):
                 st.markdown("**Monthly cost breakeven vs. down payment**")
@@ -694,23 +691,21 @@ with tab_overview:
         # ---- Retirement column ----
         with ov_col_rt:
             st.markdown("**Retirement**")
-            st.caption("How long could I survive with no income?")
+            st.caption("How long could my portfolio cover housing without earned income?")
             # Hero pair
             _rt_h1, _rt_h2 = st.columns(2, gap="small")
             _rt_h1.metric("Forced sale", _sale_label, border=True, height=MCH,
                           help="Year the owner's liquid portfolio runs dry and the house must "
                                "be sold; the proceeds (after selling costs, loan payoff and "
-                               "home-sale tax) then fund renting. 'never' means the portfolio "
-                               "sustains ownership costs indefinitely (no income, housing "
-                               "costs drawn from portfolio).")
+                               "home-sale tax) cover that month's bills and then fund renting. "
+                               "The retirement simulation runs for up to 100 years.")
             _rt_h2.metric("Buy runway advantage", _runway_adv_label,
                           delta=_runway_adv_delta, delta_color=_runway_adv_delta_color,
                           border=True, height=MCH,
                           help="Total buy runway minus rent runway, in years. "
                                "A positive value means buying survives longer in retirement. "
-                               "Neither-depleted scenarios are treated as the 100-year cap "
-                               "(1,200 months) for this arithmetic — if both are sustainable "
-                               "the card shows '—'.")
+                               "When only one portfolio depletes within 100 years, the card "
+                               "shows a bound on the difference.")
             # Supplementary row (1×2)
             _rt_r1c1, _rt_r1c2 = st.columns(2, gap="small")
             _rt_r1c1.metric("Total buy runway", _buy_label, border=True, height=MCH,
@@ -732,7 +727,7 @@ with tab_overview:
                 with st.expander("About this chart"):
                     st.markdown(
                         "Each portfolio is drawn down by its own housing costs with no "
-                        "income. Growth continues until the portfolio hits zero. "
+                        "earned income. The owner invests any property income left after bills. "
                         "Buy starts with less cash (down payment + closing already spent) "
                         "but may have lower ongoing costs depending on loan size."
                         + _sale_note_ov
@@ -789,14 +784,14 @@ with tab_calc:
 
     with f2.container(border=True):
         st.markdown("**Portfolio growth** — monthly, after annual tax drag")
-        st.latex(r"P_m = P_{m-1}\,\big(1 + r_{alt}(1 - \tau_{ann})\big)^{1/12}"
+        st.latex(r"P_m = P_{m-1}\,\big(1 + r_{alt}(1 - s_{income}\tau_{income})\big)^{1/12}"
                  r" + contrib_m")
-        st.caption("r_alt = investment return (pre-tax), τ_ann = annual tax on returns.")
+        st.caption("s_income is the share of return distributed as income. τ_income is its tax rate.")
 
     with f1.container(border=True):
         st.markdown("**After-tax portfolio if sold today**")
-        st.latex(r"P^{AT} = P - \tau_{cg} \cdot \max(0,\ P - contributions)")
-        st.caption("Cost basis = all dollars ever contributed; gains above basis are "
+        st.latex(r"P^{AT} = P - \tau_{cg} \cdot \max(0,\ P - basis)")
+        st.caption("Cost basis = contributions plus reinvested after-tax income; gains above basis are "
                    "taxed at the capital-gains rate. Applied identically to both "
                    "portfolios.")
 
@@ -806,15 +801,15 @@ with tab_calc:
                  r" NW_{rent} = P^{AT}_{rent}")
         st.latex(r"T_{home} = \tau_{cg} \cdot \max\big(0,\ H(1 - s) - basis - X_{121}\big)")
         st.caption("H = home value, s = selling costs, B = loan balance. Home basis = "
-                   "price + closing costs. X₁₂₁ = §121 exclusion (\\$250k single / "
-                   "\\$500k married), only after 24 months of ownership; 0 before. "
+                   "price + eligible closing costs. X₁₂₁ = §121 exclusion (\\$250k single / "
+                   "\\$500k married), after 24 months, assuming residence and other eligibility tests are met. "
                    "Buy advantage = NW_buy − NW_rent.")
 
     # ---- Section 2: Worked example ----
     st.subheader("Worked example at current inputs")
     if not res.feasible:
         st.warning("The sidebar inputs are infeasible (upfront cash exceeds "
-                   "capital), so there is no worked example. Lower the price or down "
+                   "capital), so the worked example, trace and CSV are unavailable. Lower the price or down "
                    "payment.")
     else:
         w1, w2, w3 = st.columns(3)
@@ -870,11 +865,14 @@ with tab_calc:
             ], columns=["Item", "Amount"]), hide_index=True)
 
         st.caption("Every value above is read from the same simulation as the charts and "
-                   "the month-by-month trace (Yearly granularity: rows 0, 1 and the last row).")
+                   "the monthly trace. The yearly view sums each year's cash flows.")
 
+
+
+def render_trace(res, selling_pct):
     # ---- Section 3: Month-by-month trace ----
     st.subheader("Month-by-month trace")
-    st.caption("One row per period, like a spreadsheet — the raw data behind every chart.")
+    st.caption("One row per period, like a spreadsheet — balances and cash flows for the wealth comparison.")
     gran = st.segmented_control("Granularity", ["Yearly", "Monthly"], default="Yearly",
                                 label_visibility="collapsed",
                                 help="Yearly sums the flows and shows end-of-year "
@@ -956,18 +954,18 @@ with tab_calc:
         "Home value": "Market value, compounding at the home-appreciation rate.",
         "Loan balance": "Remaining mortgage principal at the end of the period.",
         "Home sale tax (if sold)": "Capital-gains rate × max(0, home value × (1 − selling "
-                                   "costs) − (price + closing costs) − §121 exclusion). "
+                                   "costs) − (price + eligible closing costs) − §121 exclusion). "
                                    "No exclusion before 24 months of ownership.",
         "Home equity (if sold)": "Home value × (1 − selling costs) − loan balance − "
                                  "home sale tax.",
         "Portfolio (buy)": "Owner's investments: capital left after closing, "
                            "compounding plus any invested surplus.",
         "Portfolio (buy, after tax if sold)": "Portfolio (buy) minus capital-gains tax "
-                                              "on gains above contributed dollars.",
+                                              "on gains above tax basis.",
         "Portfolio (rent)": "Renter's investments: all capital compounding plus any "
                             "invested surplus.",
         "Portfolio (rent, after tax if sold)": "Portfolio (rent) minus capital-gains "
-                                               "tax on gains above contributed dollars.",
+                                               "tax on gains above tax basis.",
         "Net worth — buy (if sold)": "Portfolio (buy, after tax if sold) + "
                                      "Home equity (if sold).",
         "Net worth — rent (if sold)": "Portfolio (rent, after tax if sold).",
@@ -1010,12 +1008,12 @@ with tab_calc:
 - **Own − rent** is the cash-flow gap between the two lifestyles. Whichever side is cheaper
   invests that gap: positive → **Invested → rent portfolio** (renting is cheaper that month),
   negative → **Invested → buy portfolio**. Both scenarios spend identical total dollars.
-- **Portfolio (buy)** starts at capital − down payment − closing costs and compounds at the
-  investment return (net of annual drag), plus any invested surplus.
+- **Portfolio (buy)** starts at capital − down payment − closing costs − one-time costs and compounds at the
+  investment return (after tax on distributed income), plus any invested surplus.
 - **… after tax if sold** = portfolio − capital-gains tax on embedded gains (value minus
-  contributed dollars). Applied identically to both portfolios.
+  tax basis). Applied identically to both portfolios.
 - **Home sale tax (if sold)** = capital-gains rate × the home's gain above the §121
-  exclusion. Gain = home value × (1 − selling costs) − (price + closing costs). The
+  exclusion. Gain = home value × (1 − selling costs) − (price + eligible closing costs). The
   exclusion (\\$250k single / \\$500k married) applies only after 24 months of ownership.
 - **Home equity (if sold)** = home value × (1 − selling costs) − loan balance − home sale
   tax: the property side of the buy scenario.
@@ -1026,6 +1024,11 @@ with tab_calc:
   after-tax "if sold" basis.
 """)
 
+
+with tab_calc:
+    if res.feasible:
+        render_trace(res, selling_pct)
+
     # ---- Model assumptions (bottom of tab) ----
     with st.expander("Model assumptions & known simplifications", icon=":material/info:"):
         st.markdown("""
@@ -1034,13 +1037,13 @@ with tab_calc:
 - **Investment taxes:** an annual drag on returns (dividends/turnover) plus capital-gains
   tax on unrealized portfolio gains, applied in every "if sold" figure for **both**
   scenarios' portfolios.
-  Cost basis = dollars contributed; gains above basis are taxed at the sale rate.
+  Cost basis includes contributions and reinvested after-tax income; gains above basis are taxed at the sale rate.
 - **Interest deduction:** combined marginal rate × interest on the deductible share of the
   balance (capped at \\$750k of balance). Assumes you itemize either way.
 - **Prop 13:** assessed value (property tax base) grows at 2%/yr regardless of market value.
 - **PMI:** charged when down < 20%, drops when the balance falls below 78% of purchase price.
 - **Home sale:** "if sold" subtracts selling costs **and** capital-gains tax on the home.
-  Basis = price + closing costs (one-time/moving costs are not basis); gain = value ×
+  Basis = price + eligible closing costs (one-time/moving costs are not basis); gain = value ×
   (1 − selling costs) − basis. The §121 exclusion (\\$250k single / \\$500k married, set
   by filing status) applies only once the home has been owned for 24 months — before that
   the whole gain is taxed (partial/hardship exclusions are ignored). Gain above the
@@ -1138,7 +1141,11 @@ SWEEP_PARAMS = {p.key: p for p in [
                _int_axis(1, 30), _num),
     SweepParam("marginal", "Marginal tax rate (%)", "marginal_tax_rate",
                lambda v: v / 100, _lin_axis(0, 55), _pct),
-    SweepParam("inv_tax", "Annual tax on returns (%)", "investment_tax_drag",
+    SweepParam("basis_share", "Eligible share of closing costs (%)", "closing_basis_share",
+               lambda v: v / 100, _lin_axis(0, 100), _pct),
+    SweepParam("income_share", "Investment income share (%)", "investment_income_share",
+               lambda v: v / 100, _lin_axis(0, 100), _pct),
+    SweepParam("inv_tax", "Tax rate on investment income (%)", "investment_tax_drag",
                lambda v: v / 100, _lin_axis(0, 50), _pct),
     SweepParam("cap_gains", "Capital gains at sale (%)", "cap_gains_rate",
                lambda v: v / 100, _lin_axis(0, 45), _pct),
@@ -1152,7 +1159,7 @@ def _fmt_years(v):
 
 
 def _fmt_runway(v):
-    return "100+ yrs" if v >= 100 else f"{v:.1f} yrs"
+    return "100 yrs (cap)" if v >= 100 else f"{v:.1f} yrs"
 
 
 # Fixed set of 4 metrics shown in the Scenario Explorer tab, in display order.
@@ -1167,17 +1174,17 @@ FIXED_METRICS = [
 FIXED_METRIC_KEYS = [m[0] for m in FIXED_METRICS]
 
 
-def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio):
+def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio, use_ratio):
     """Assumptions for one grid cell: the sidebar scenario with the two swept
-    fields overridden. If price or the price-to-rent ratio is swept, the cell's
-    rent is re-derived as price ÷ ratio ÷ 12 (same convention as the sidebar's
-    derived rent); otherwise the sidebar scenario's rent is kept."""
+    fields overridden. Sweeping the ratio enables derived rent. A price sweep alone follows
+    the sidebar rent mode."""
     overrides = {}
     price_v, ratio_v, derive = base_a.price, ratio, False
     for key, val in ((x_key, xv), (y_key, yv)):
         p = SWEEP_PARAMS[key]
         if key == "price":
-            price_v, derive = float(val), True
+            price_v = float(val)
+            derive = derive or use_ratio
         elif key == "p2r":
             ratio_v, derive = float(val), True
         if p.field is not None:
@@ -1189,7 +1196,7 @@ def _cell_assumptions(base_a: Assumptions, x_key, xv, y_key, yv, ratio):
 
 @st.cache_data(show_spinner="Running custom sweep...")
 def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
-                     x_vals: tuple, y_vals: tuple, ratio: float):
+                     x_vals: tuple, y_vals: tuple, ratio: float, use_ratio: bool):
     """All-metrics grid over y_vals × x_vals (rows = Y). One simulate() + one runway()
     call per cell; unaffordable cells stay NaN across all metric grids.
 
@@ -1201,7 +1208,7 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
 
     for i, yv in enumerate(y_vals):
         for j, xv in enumerate(x_vals):
-            cell_a = _cell_assumptions(base_a, x_key, xv, y_key, yv, ratio)
+            cell_a = _cell_assumptions(base_a, x_key, xv, y_key, yv, ratio, use_ratio)
             upfront_c = (cell_a.price * cell_a.down_pct
                          + cell_a.price * cell_a.closing_buy_pct
                          + cell_a.other_onetime_costs)
@@ -1228,9 +1235,9 @@ def run_custom_sweep(base_a: Assumptions, x_key: str, y_key: str,
 
 
 with tab_explorer:
-    st.caption("Ranges are automatic — full natural range for bounded inputs, 2× the "
-               "current value for open-ended dollar inputs. Rent scales with price via "
-               "the price-to-rent ratio; blank cells are unaffordable.")
+    st.caption("Manual rent stays fixed unless you sweep the price-to-rent ratio. "
+               "Blank cells indicate an unaffordable purchase or no breakeven within the horizon. "
+               "Retirement runway is capped at 100 years.")
 
     sc1, sc2 = st.columns(2)
     x_key = sc1.selectbox("X axis", list(SWEEP_PARAMS), key="sweep_x",
@@ -1250,7 +1257,7 @@ with tab_explorer:
         xp, yp = SWEEP_PARAMS[x_key], SWEEP_PARAMS[y_key]
         x_vals, y_vals = xp.values, yp.values
 
-        grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals, p2r)
+        grids = run_custom_sweep(a, x_key, y_key, x_vals, y_vals, p2r, derive_rent)
 
         x_labels = [xp.fmt(v) for v in x_vals]
         y_labels = [yp.fmt(v) for v in y_vals]
@@ -1343,7 +1350,7 @@ with tab_charts:
             _ch_rt1, _ch_rt2 = st.columns(2, gap="small")
             _ch_rt1.metric("Buy burn (mo 1)", fmt(_burn_buy_m1), border=True, height=MCH,
                            help="Owner's total month-1 outflow: P&I + property tax + insurance + "
-                                "maintenance + HOA + PMI. No interest-deduction benefit (no income).")
+                                "maintenance + HOA + PMI, less net property income.")
             _ch_rt2.metric("Rent burn (mo 1)", fmt(_burn_rent_m1), border=True, height=MCH,
                            help="Renter's month-1 outflow: the rent payment.")
 

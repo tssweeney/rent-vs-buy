@@ -63,6 +63,11 @@ def test_no_exception(overrides):
 def test_infeasible_shows_error():
     at = _run({"capital": 100000})
     assert any("Infeasible" in e.value for e in at.error)
+    assert not at.tabs[2].dataframe
+    assert not at.get("download_button")
+    at.number_input(key="capital").set_value(1_500_000).run()
+    assert at.tabs[2].dataframe
+    assert at.get("download_button")
 
 
 def test_same_axis_warning():
@@ -96,3 +101,28 @@ def test_rerun_sequence_no_crash():
                           timeout=TIMEOUT, cwd=ROOT)
     assert proc.returncode == 0, (proc.returncode, proc.stderr[-2000:])
     assert "OK" in proc.stdout
+
+
+@pytest.mark.parametrize("overrides, expected, delta", [
+    ({"down_pct": 31}, "0 yrs", "same depletion month"),
+    ({"monthly_income": 20_000}, "> 885 mo", "buy lasts longer"),
+    ({"monthly_income": 20_000, "alt_return": 12.0}, "—", "both funded through year 100"),
+])
+def test_runway_comparison(overrides, expected, delta):
+    at = _run(overrides)
+    card = next(m for m in at.metric if m.label == "Buy runway advantage")
+    assert (card.value, card.delta) == (expected, delta)
+    if "monthly_income" in overrides:
+        assert next(m.value for m in at.metric if m.label == "Forced sale") == "None in 100 yrs"
+
+
+def test_manual_rent_matches_explorer_and_wealth_trace():
+    at = _run({"derive_rent": False, "rent0": 500, "price": 200_000, "down_pct": 100})
+    overview = next(m.value for m in at.metric if m.label == "Buy advantage")
+    best = at.tabs[1].dataframe[0].value.iloc[0]
+    assert best["Purchase price ($)"] == "$200,000"
+    assert best["Best Down payment (%)"] == "100%"
+    assert best["Buy advantage ($, maximize)"] == overview
+    trace = at.tabs[2].dataframe[-1].value
+    assert f"${trace.iloc[-1]['Buy advantage']:,.0f}" == overview
+    assert trace.iloc[1]["Rent"] == 12 * 500
